@@ -17,6 +17,9 @@ For a given invocation of *venmo2ofx*, all inputs must be from the same Venmo ac
 
 * Auto-detects directionality to identify the other party
 * Includes the notes field with all those emojis that Venmo users love
+* Payments that generate a debit on your backing back account are expressed as two transactions:
+   * A transfer of funds in from your backing bank account (which can be reconciled against that account)
+   * A payment out (which can be reconciled against expense or revenue accounts)
 * Supports multiple Venmo accounts
   * Includes venmo user `@handle` in account meta-data so that bookkeeping software can map to the correct account
 * Supports Venmo consumer accounts and business accounts (download the Fees CSVs)
