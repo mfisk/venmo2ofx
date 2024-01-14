@@ -1,0 +1,295 @@
+#!/usr/bin/python3
+
+import csv
+import datetime
+from xml.sax.saxutils import escape
+import sys
+import traceback
+
+transactions = ""
+first = None
+last = None
+venmo_id = None
+default_currency = None
+balance = None
+balance_timestamp = None
+prev_timestamp = None #previous row timestamp in this file
+
+def ofx_datetime(dt):
+	return dt.strftime("%Y%m%d%H%M%S")
+
+def generate(tag, value=None):
+	global transactions
+	if value:
+		transactions += stanza(tag, escape(value))
+	else:
+		transactions += tag# + "\n"
+
+def stanza(*values):
+	values = list(values)
+
+	tag = values.pop(0)
+	return "<%s>%s</%s>\n" % (tag, "\n".join(values), tag)
+
+def parse_file(f):
+	statement = None
+	pos = {}
+	global venmo_id
+	global prev_timestamp
+	prev_timestamp = None # Only use inherit prev_timestamp within a file
+	#is_biz = True
+
+	rows = csv.reader(f)
+	#print(pos.keys(), file=sys.stderr)
+
+	for row in rows:
+		if row[0].startswith("Account Statement - (@"):
+			statement = row[0]
+			assert(0 == sum([len(s) for s in row[1:]]))
+			new_id = row[0].split('(')[1].split(')')[0]
+			if venmo_id and venmo_id != new_id:
+				print("Cannot mix Venmo IDs %s and %s; exclude file '%s'" % (venmo_id, new_id, f.name), file=sys.stderr)
+				sys.exit(-1)
+			else:
+				venmo_id = new_id
+			continue
+
+		if row[0] == "Account Activity":
+			assert(0 == sum([len(s) for s in row[1:]]))
+			#s_biz = False
+			continue
+
+		if not pos:
+			# First regular row is headers; memorize the column headers	
+			i = 0
+			for col in row:
+				pos[col] = i
+				i += 1
+			is_biz = "Amount (net)" in pos
+			continue
+
+		try:
+			parse_row(row, pos, is_biz)
+		except:
+			traceback.print_exc(file=sys.stderr)
+			print("Error parsing transaction: %s" % (row), file=sys.stderr)
+			print("Headers: %s" % (pos), file=sys.stderr)
+			sys.exit(-1)
+
+	if statement:
+		print(statement, file=sys.stderr)
+
+# Columns (business format as of 2023-01-13
+# Transaction ID	# """3886645422299689592"""
+# Date				# 09/05/2023
+# Time (UTC)		# HH:MM:SS	
+# Type				# Payment|Charge|Standard Transfer 
+# Status			# Complete|Issued
+# Note				# User provided
+# From				
+# To	
+# Amount (total)	# + $1,245.00
+# Amount (tip)	
+# Amount (tax)	
+# Amount (net)		# + $1,234.00
+# Amount (fee)	
+# Tax Rate	
+# Tax Exempt		# FALSE
+# Funding Source	# Venmo balance
+# Destination	    # Venmo balance
+# Beginning Balance	
+# Ending Balance				
+# Statement Period Venmo Fees	# 0
+# Terminal Location				# Venmo
+# Year to Date Venmo Fees		# 0
+# Disclaimer					# (None)
+
+# Columns (consumer format as of 2023-01-13):
+# ID
+# Datetime		# 2023-10-18T15:46:36
+# Type,Status,Note,From,To,Amount (total),Amount (tip),Amount (tax),Amount (fee),Tax Rate,Tax Exempt,Funding Source,Destination,Beginning Balance,Ending Balance,Statement Period Venmo Fees,Terminal Location,Year to Date Venmo Fees,Disclaimer
+	
+
+
+def parse_row(row, pos, is_biz):
+	global balance_timestamp
+	global prev_timestamp
+	global balance
+
+	val = { k: row[pos[k]] for k in pos.keys()}
+
+	# Skip over non-transaction rows
+	if row[1] == "": 
+		if val["Ending Balance"]:
+			# These summary lines don't have a date, 
+			# so we use prev_timestamp to get the previous transaction processed
+			if prev_timestamp and ((not balance_timestamp) or (prev_timestamp >= balance_timestamp)):
+				#print("EB", val, prev_timestamp, balance_timestamp, file=sys.stderr)
+				balance = val["Ending Balance"]
+				balance_timestamp = prev_timestamp
+
+		return
+
+	generate("<STMTTRN>")
+
+	if val["Amount (total)"].startswith("-"):
+		generate("TRNTYPE", "DEBIT")
+	else:
+		generate("TRNTYPE", "CREDIT")
+	
+	if is_biz:
+		timestamp = datetime.datetime.strptime(val["Date"] + " " + val["Time (UTC)"], "%m/%d/%Y %H:%M:%S")
+		id = val["Transaction ID"].replace('"', "")
+		amount = val["Amount (net)"]
+		if amount == "0" or amount == "":
+			amount = val["Amount (total)"]
+
+	else:
+		timestamp = datetime.datetime.fromisoformat(val["Datetime"])
+		id = val["ID"]
+		amount = val["Amount (total)"]
+	
+	prev_timestamp = timestamp
+
+	global first
+	global last
+	if not first or first > timestamp:
+		first = timestamp
+	if not last or last < timestamp:
+		last = timestamp
+
+		# The 'Ending Balance' column always appears 0 in normal rows, 
+		# but if we ever see one, this logic would keep the latest
+		if False and val["Ending Balance"].replace("$","") != "0.00":
+			balance_timestamp = timestamp
+			balance = val["Ending Balance"]
+
+	generate("DTPOSTED", ofx_datetime(timestamp))
+
+	currency = None
+	if "$" in amount:
+		global default_currency
+		if not default_currency: 
+			default_currency = "USD" #ISO-4217
+		elif default_currency != "USD":
+			currency = stanza("CURRENCY", stanza("CURRATE", "1.0"), stanza("CURSYM", "USD")) # ISO-4217 
+	else:
+		print("Error: Unsupported currency:", amount, file=sys.stderr)
+		sys.exit(-1)
+
+	amount = amount.replace(",", "").replace("$", "").replace(" ","").replace("+","")
+	generate("TRNAMT", amount)
+
+	generate("FITID", id)
+
+	#Figure out who the other party is
+	other_party = val["To"]
+	transfer_to = None
+	if val["Type"] == "Standard Transfer" and val["From"] == "(None)":
+		other_party = "VENMO-CASHOUT to " + val["Destination"]
+
+		transfer_to = stanza("BANKACCTTO", 
+			stanza("BANKID", val["Destination"]), 
+			stanza("ACCTID", val["Destination"]),
+			stanza("ACCTTYPE", "CHECKING"))
+
+	elif val["Type"] == "Payment": 
+		if not val["Amount (total)"].startswith("-"):
+			other_party = val["From"]
+	elif val["Type"] == "Charge":
+		if val["Amount (total)"].startswith("-"): 
+			other_party = val["From"]
+
+	generate("NAME", other_party)
+
+	if val["Note"] != "(None)":
+		generate("MEMO", val["Note"])
+
+	if transfer_to:
+		generate(transfer_to)
+
+	if currency:
+		generate(currency) 
+
+	generate("</STMTTRN>\n")
+
+	dest = val["Destination"].replace("Venmo balance", "").replace("(None)", "")
+	src = val["Funding Source"].replace("Venmo balance", "").replace("(None)", "")
+	if dest and not src: 
+		account = dest
+	elif src and not dest:
+		account = src
+	elif src and dest:
+		print("Did not expect source (%s) and destination (%s) accounts" % (src, dest), file=sys.stderr)
+	else:
+		account = None
+
+	if account and val["Type"] != "Standard Transfer":
+		# This transaction generated a bank debit
+		# Emit a second transaction for that
+		if amount.startswith("-"):
+			amount = amount.replace("-", "")
+		else:
+			amount = "-" + amount
+
+		generate(stanza("STMTTRN", 
+			stanza("TRNTYPE", "CREDIT"),
+			stanza("DTPOSTED", ofx_datetime(timestamp)),
+			stanza("TRNAMT", amount),
+			stanza("FITID", id + ".1"),
+			stanza("NAME", "VENMO PAYMENT from " + account),
+			stanza("BANKACCTTO", 
+				stanza("BANKID", account), 
+				stanza("ACCTID", account),
+				stanza("ACCTTYPE", "CHECKING")),
+			currency or ""
+		))
+
+
+	#print("Funding Source: %s; Destination %s" % (val["Funding Source"], val["Destination"]), file=sys.stderr)
+
+
+
+def main():
+	if 1 == len(sys.argv):
+		parse_file(sys.stdin)
+	else:
+		for f in sys.argv[1:]:
+			parse_file(open(f))
+
+	if not transactions:
+		print("No transactions found", file=sys.stderr)
+		sys.exit(-1)
+
+	print("""<?xml version="1.0" encoding="utf-8" ?>
+<?OFX OFXHEADER="200" VERSION="202" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>""")
+
+	print(stanza("OFX", 
+		# stanza("SIGNONMSGSRSV1", stanza("SONRS", 
+		# 	stanza("STATUS", 
+		# 		stanza("CODE", "0"), 
+		# 		stanza("SEVERITY", "INFO"),
+		# 	stanza("FI", 
+		# 		stanza("ORG", "Venmo"))))),
+		stanza("BANKMSGSRSV1",
+			stanza("STMTTRNRS",
+				stanza("TRNUID", "1001"),
+				stanza("STATUS", 
+					stanza("CODE", "0"), 
+					stanza("SEVERITY", "INFO")),
+				stanza("STMTRS", 
+					stanza("CURDEF", default_currency),
+					stanza("BANKACCTFROM", 
+						stanza("BANKID", "Venmo"), 
+						stanza("ACCTID", venmo_id),
+						stanza("ACCTTYPE", "CHECKING")),
+					stanza("BANKTRANLIST", 
+						stanza("DTSTART", ofx_datetime(first)),
+						stanza("DTEND", ofx_datetime(last)),
+						transactions.replace("\n\n", "\n")),
+					stanza("LEDGERBAL",
+						stanza("BALAMT", balance),
+						stanza("DTASOF", ofx_datetime(balance_timestamp)))
+			)))))
+
+main()
