@@ -1,0 +1,76 @@
+# Example reconcile.yaml for reconcile.py
+#
+# Copy this to reconcile.yaml and fill in your own accounts and patterns.
+# See README.md for the rule precedence order.
+#
+# Rules are a recursive tree. Any node can have a nested `rules:` list;
+# children inherit all parent keys (source, account, etc.) unless overridden.
+# A node with an `account` and matching criteria (desc, mcc, pfc,
+# checks, fitid, or amount_gt/lt/gte/lte) is a leaf rule.
+
+source_accounts:
+  # Map input accounts to account paths in your bookkeeping software.
+  # Use placeholder values — never commit real account numbers.
+  # Each entry matches on mask (last4); institution and account_type
+  # disambiguate when two accounts share a mask.
+  - account: Assets:Checking
+    mask: 'AAAA'
+    institution: Example Bank
+    account_type: checking
+  - account: Assets:Savings
+    mask: 'BBBB'
+    institution: Example Bank
+    account_type: savings
+  - account: Liabilities:Credit Card
+    mask: 'CCCC'
+    institution: Example Card
+    account_type: credit
+
+rules:
+  # Group by source; children inherit it.
+  - source: Assets:Checking
+    rules:
+      - account: Expenses:Groceries
+        desc:
+          - CORNER MARKET
+          - FRESH FIELDS
+
+      # Transfers are just rules between two source accounts.
+      # Pairing is automatic when both accounts are in source_accounts:.
+      - account: Liabilities:Credit Card
+        desc:
+          - ONLINE PAYMENT
+          - PAYMENT THANK YOU
+
+      # '#' in a desc matches any digit.
+      - account: Expenses:Fuel
+        desc: PILOT #
+
+      # Nested: children inherit account from the parent.
+      - account: Expenses:Fuel
+        rules:
+          # MCC alone, no desc: any transaction with these codes.
+          - mcc: [5541, 5542]
+          # Compound: desc + no_mcc. Backstop for code-less data.
+          - desc: PILOT #
+            no_mcc: true
+
+      - account: Expenses:Dining
+        desc: BLUE BOTTLE
+        pfc: [FOOD_AND_DRINK_COFFEE]
+
+      # Check numbers are exact per-account identifiers. Three formats:
+      # a plain list, a dict mapping numbers to payee names, or a dict
+      # mapping payee names to lists of numbers.
+      - account: Expenses:Parking
+        checks:
+          CITY GARAGE LLC: ['1042', '1043']
+      - account: Expenses:Office
+        checks: ['2041', '2042']
+
+      # Amount thresholds use signed amounts: negative = debit (money out),
+      # positive = credit (money in). This catches all deposits to Savings
+      # that no more specific rule claimed.
+      - account: Income:Interest
+        source: Assets:Savings
+        amount_gt: 0
