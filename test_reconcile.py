@@ -212,6 +212,50 @@ rules:
     print("PASS: transfer as rule")
 
 
+
+def test_amount_conditions():
+    import tempfile, os
+    rules = '''
+rules:
+- source: Assets:Checking
+  rules:
+  - account: Expenses:Fees
+    desc: INTUIT
+    amount: "<0"
+  - account: Income:Revenue
+    desc: INTUIT
+    amount: ">0"
+  - account: Expenses:Exact
+    desc: EXACT
+    amount: 100
+  - account: Expenses:Credits
+    amount: ">0"
+'''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        f.write(rules)
+        path = f.name
+    r = Rules(path)
+    # Debit with INTUIT -> Fees
+    acct, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=-50.0)
+    assert acct == 'Expenses:Fees', f"debit got {acct}"
+    # Credit with INTUIT -> Revenue
+    acct, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=1000.0)
+    assert acct == 'Income:Revenue', f"credit got {acct}"
+    # Exact amount match
+    acct, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=100.0)
+    assert acct == 'Expenses:Exact', f"exact got {acct}"
+    # Exact amount non-match -> falls to amount-only credit catch-all
+    acct, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=99.0)
+    assert acct == 'Expenses:Credits', f"non-exact got {acct}"
+    # Amount-only catch-all for credits
+    acct, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=5.0)
+    assert acct == 'Expenses:Credits', f"catch-all got {acct}"
+    # Debit with random desc -> no match (no debit catch-all)
+    acct, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=-5.0)
+    assert acct is None or "Unknown" in str(acct), f"debit catch-all got {acct}"
+    os.unlink(path)
+    print("PASS: amount conditions")
+
 if __name__ == '__main__':
     test_pattern_rule()
     test_nested_inheritance()
@@ -222,4 +266,6 @@ if __name__ == '__main__':
     test_checknum()
     test_source_scoping()
     test_transfer_as_rule()
+    test_amount_conditions()
     print("\nAll tests passed.")
+

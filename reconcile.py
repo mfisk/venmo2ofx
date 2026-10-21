@@ -134,17 +134,17 @@ class Rules:
         hand_count = 0
         # Matching criteria keys (a leaf rule needs account + at least one).
         # Amount conditions use signed amounts: negative = debit (money out),
-        # positive = credit (money in). amount_gt/amount_lt compare strictly;
-        # amount_gte/amount_lte include the boundary. An amount-only rule
-        # is a catch-all for that flow on its source (e.g. amount_gt: 0
-        # catches all credits/deposits).
+        # positive = credit (money in). The amount value can be an exact
+        # number (amount: 100), or a string with >/</>=/<= prefix
+        # (amount: ">0", amount: "<0"). An amount-only rule is a catch-all
+        # for that flow on its source (e.g. amount: ">0" catches all
+        # credits/deposits).
         CRITERIA = ("desc", "mcc", "pfc", "checks", "checknum", "fitid",
-                    "amount_gt", "amount_lt", "amount_gte", "amount_lte")
+                    "amount")
         # All valid keys on a rule node.
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
-                 "amount_gt", "amount_lt", "amount_gte", "amount_lte",
-                 "rules"}
+                 "amount", "rules"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
             for node in nodes:
@@ -179,12 +179,32 @@ class Rules:
                             check(isinstance(ctx[ck], bool),
                                   f"{ck} must be true/false at {where}")
                             cond[ck] = ctx[ck]
-                    for ck in ("amount_gt", "amount_lt", "amount_gte", "amount_lte"):
+                    for ck in ("amount",):
                         if ck in ctx:
                             v = ctx[ck]
-                            check(isinstance(v, (int, float)) and not isinstance(v, bool),
-                                  f"{ck} must be a number at {where}")
-                            cond[ck] = float(v)
+                            # amount can be a number (exact match) or a string
+                            # like ">0", "<0", ">=100", "<=50"
+                            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                                cond[ck] = ("==", float(v))
+                            elif isinstance(v, str):
+                                s = v.strip()
+                                op = None
+                                for prefix in (">=", "<=", ">", "<"):
+                                    if s.startswith(prefix):
+                                        op = prefix
+                                        num_str = s[len(prefix):].strip()
+                                        break
+                                check(op is not None,
+                                      f"amount string must start with >/</>=/<= at {where}: {v!r}")
+                                try:
+                                    num = float(num_str)
+                                except ValueError:
+                                    check(False,
+                                          f"amount value must be a number at {where}: {v!r}")
+                                cond[ck] = (op, num)
+                            else:
+                                check(False,
+                                      f"amount must be a number or >/​</>=/<= string at {where}: {v!r}")
                     check(not ("mcc" in cond and cond.get("no_mcc")),
                           f"mcc + no_mcc can never fire at {where}")
                     check(not ("pfc" in cond and cond.get("no_pfc")),
@@ -336,17 +356,20 @@ class Rules:
             return False
         # Amount conditions: signed amount, negative = debit (out),
         # positive = credit (in). Fail closed when amount is unknown.
-        if amount is None and any(k in cond for k in
-                ("amount_gt", "amount_lt", "amount_gte", "amount_lte")):
+        if amount is None and "amount" in cond:
             return False
-        if "amount_gt" in cond and not amount > cond["amount_gt"]:
-            return False
-        if "amount_lt" in cond and not amount < cond["amount_lt"]:
-            return False
-        if "amount_gte" in cond and not amount >= cond["amount_gte"]:
-            return False
-        if "amount_lte" in cond and not amount <= cond["amount_lte"]:
-            return False
+        if "amount" in cond:
+            op, threshold = cond["amount"]
+            if op == "==" and not amount == threshold:
+                return False
+            if op == ">" and not amount > threshold:
+                return False
+            if op == "<" and not amount < threshold:
+                return False
+            if op == ">=" and not amount >= threshold:
+                return False
+            if op == "<=" and not amount <= threshold:
+                return False
         return True
 
     def source_account(self, acct_id, hint=None, metadata=None):
@@ -388,7 +411,7 @@ class Rules:
             plaid: optional dict with 'mcc' and/or 'pfc_detailed' from Plaid API
             fitid: optional unique transaction ID for one-off mappings
             amount: signed amount (negative = debit/out, positive = credit/in);
-                enables amount_gt/lt/gte/lte rules
+                enables amount rules
         """
         folded = fold(text)
         if hasattr(date, "strftime"):
@@ -420,15 +443,15 @@ class Rules:
             # checked via the fallback indexes below. Amount-only rules are
             # the exception — they match any description for their amount
             # range (e.g. all credits on a source).
-            _AMT_KEYS = ("amount_gt", "amount_lt", "amount_gte", "amount_lte")
-            if m is None and not (cond and any(k in cond for k in _AMT_KEYS)):
+            if m is None and not (cond and "amount" in cond):
                 continue
             if m is not None and fold(m) not in folded:
                 continue
             if cond is not None and not self._cond_ok(cond, plaid, amount):
                 continue
             if m is None:
-                _desc = ",".join(f"{k}={cond[k]:g}" for k in _AMT_KEYS if k in cond)
+                op, threshold = cond["amount"]
+                _desc = f"{op}{threshold:g}"
                 return resolve(account), f'amount:{_desc}'
             return resolve(account), f'rule:"{m}"'
         # Code-based rules (MCC, then PFC) are the last resort.

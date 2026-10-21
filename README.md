@@ -121,11 +121,13 @@ Copy `reconcile.yaml.example` to `reconcile.yaml`. Two top-level keys: `source_a
     * `checks: [1042, 1043]` — list of numbers
     * `checks: {'1042': 'CITY GARAGE'}` — number → payee name
     * `checks: {'CITY GARAGE': ['1042', '1043']}` — payee → list of numbers
-  * `amount_gt:` / `amount_lt:` / `amount_gte:` / `amount_lte:` — numeric
-    thresholds on the signed amount (negative = debit/money out, positive =
-    credit/money in). An amount-only rule (no desc/mcc/pfc) is a catch-all
-    for that flow on its source, sorted after all patterned rules.
-* Compound conditions: `desc:` plus `mcc:`/`pfc:`/`no_mcc:`/`no_pfc:`/`amount_gt:` etc. must all pass.
+  * `amount:` — amount condition on the signed amount (negative =
+    debit/money out, positive = credit/money in). Value can be an exact
+    number (`amount: 100`) or a string with `>`/`<`/`>=`/`<=` prefix
+    (`amount: ">0"`, `amount: "<0"`). An amount-only rule (no
+    desc/mcc/pfc) is a catch-all for that flow on its source, sorted
+    after all patterned rules.
+* Compound conditions: `desc:` plus `mcc:`/`pfc:`/`no_mcc:`/`no_pfc:`/`amount:` must all pass.
   * `no_mcc:` / `no_pfc:` — fires only when the code is absent entirely
   * A missing code never satisfies `mcc:`/`pfc:`
   * Amount conditions fail closed when the amount is unknown

@@ -6,7 +6,7 @@
 # Rules are a recursive tree. Any node can have a nested `rules:` list;
 # children inherit all parent keys (source, account, etc.) unless overridden.
 # A node with an `account` and matching criteria (desc, mcc, pfc,
-# checks, fitid, or amount_gt/lt/gte/lte) is a leaf rule.
+# checks, fitid, or amount) is a leaf rule.
 
 source_accounts:
   # Map input accounts to account paths in your bookkeeping software.
@@ -68,9 +68,10 @@ rules:
       - account: Expenses:Office
         checks: ['2041', '2042']
 
-      # Amount thresholds use signed amounts: negative = debit (money out),
-      # positive = credit (money in). This catches all deposits to Savings
-      # that no more specific rule claimed.
+      # Amount conditions use signed amounts: negative = debit (money out),
+      # positive = credit (money in). Value can be exact (amount: 100)
+      # or a comparison string (amount: ">0"). This catches all deposits
+      # to Savings that no more specific rule claimed.
       - account: Income:Interest
         source: Assets:Savings
-        amount_gt: 0
+        amount: ">0"
