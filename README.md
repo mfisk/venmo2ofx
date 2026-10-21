@@ -98,6 +98,7 @@ Copy `reconcile.yaml.example` to `reconcile.yaml` and fill in your account mappi
 * Check-number rules — matched on check number for check transactions
 * Description patterns — substring matches on payee/memo; longer patterns win over shorter ones, so `WHOLE FOODS MARKET #123` beats `WHOLE FOODS`
 * MCC/PFC code rules — last resort, based on merchant category code or Plaid personal finance category
+* Amount-only rules — no description pattern, just an amount condition (e.g. `amount: ">0"`). These sort as lowest priority: any rule with a description pattern, MCC, check number, or FITID will match first. Use for catch-all defaults like "all deposits to this account."
 4. **Reconcile** — pairs transfer legs across accounts; strict by default, `--allow-unpaired` lists instead of aborting
 5. **Emit** — a single reconciled multi-account QIF (one file, all accounts, deterministic)
 

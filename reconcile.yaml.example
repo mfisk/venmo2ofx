@@ -70,8 +70,14 @@ rules:
 
       # Amount conditions use signed amounts: negative = debit (money out),
       # positive = credit (money in). Value can be exact (amount: 100)
-      # or a comparison string (amount: ">0"). This catches all deposits
-      # to Savings that no more specific rule claimed.
+      # or a comparison string (amount: ">0", amount: "<0").
+      #
+      # PRIORITY: Amount-only rules (no desc/mcc/pfc/checks/fitid) sort as
+      # lowest priority. Any rule with a description pattern, MCC, check
+      # number, or FITID will match first. Use amount-only for catch-all
+      # defaults like "all deposits to this account."
+      #
+      # This catches all deposits to Savings that no more specific rule claimed.
       - account: Income:Interest
         source: Assets:Savings
         amount: ">0"
