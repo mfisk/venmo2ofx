@@ -135,7 +135,7 @@ class Rules:
         # Matching criteria keys (a leaf rule needs account + at least one).
         # Amount conditions use signed amounts: negative = debit (money out),
         # positive = credit (money in). The amount value can be an exact
-        # number (amount: 100), or a string with >/</>=/<= prefix
+        # number (amount: 100), or a string with >/< prefix
         # (amount: ">0", amount: "<0"). An amount-only rule is a catch-all
         # for that flow on its source (e.g. amount: ">0" catches all
         # credits/deposits).
@@ -183,19 +183,19 @@ class Rules:
                         if ck in ctx:
                             v = ctx[ck]
                             # amount can be a number (exact match) or a string
-                            # like ">0", "<0", ">=100", "<=50"
+                            # like ">0", "<0"
                             if isinstance(v, (int, float)) and not isinstance(v, bool):
                                 cond[ck] = ("==", float(v))
                             elif isinstance(v, str):
                                 s = v.strip()
                                 op = None
-                                for prefix in (">=", "<=", ">", "<"):
+                                for prefix in (">", "<"):
                                     if s.startswith(prefix):
                                         op = prefix
                                         num_str = s[len(prefix):].strip()
                                         break
                                 check(op is not None,
-                                      f"amount string must start with >/</>=/<= at {where}: {v!r}")
+                                      f"amount string must start with > or < at {where}: {v!r}")
                                 try:
                                     num = float(num_str)
                                 except ValueError:
@@ -204,7 +204,7 @@ class Rules:
                                 cond[ck] = (op, num)
                             else:
                                 check(False,
-                                      f"amount must be a number or >/​</>=/<= string at {where}: {v!r}")
+                                      f"amount must be a number or >/​< string at {where}: {v!r}")
                     check(not ("mcc" in cond and cond.get("no_mcc")),
                           f"mcc + no_mcc can never fire at {where}")
                     check(not ("pfc" in cond and cond.get("no_pfc")),
@@ -365,10 +365,6 @@ class Rules:
             if op == ">" and not amount > threshold:
                 return False
             if op == "<" and not amount < threshold:
-                return False
-            if op == ">=" and not amount >= threshold:
-                return False
-            if op == "<=" and not amount <= threshold:
                 return False
         return True
 

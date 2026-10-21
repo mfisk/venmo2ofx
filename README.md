@@ -123,7 +123,7 @@ Copy `reconcile.yaml.example` to `reconcile.yaml`. Two top-level keys: `source_a
     * `checks: {'CITY GARAGE': ['1042', '1043']}` — payee → list of numbers
   * `amount:` — amount condition on the signed amount (negative =
     debit/money out, positive = credit/money in). Value can be an exact
-    number (`amount: 100`) or a string with `>`/`<`/`>=`/`<=` prefix
+    number (`amount: 100`) or a string with `>`/`<` prefix
     (`amount: ">0"`, `amount: "<0"`). An amount-only rule (no
     desc/mcc/pfc) is a catch-all for that flow on its source, sorted
     after all patterned rules.
