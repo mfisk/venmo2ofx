@@ -313,21 +313,22 @@ class Rules:
                     self.mcc_index[(src, str(mcc))] = acct
                 for pfc in cond.get("pfc") or []:
                     self.pfc_index[(src, pfc)] = acct
-        # Commission rules: match memo_regex against transaction memo, extract
-        # horse name (group 1) and amount (group 2), emit a double-entry
-        # commission transaction (+horse capital, -commission expense).
-        # Each rule: {memo_regex, horse_account}. The commission expense
-        # account is fixed: Overhead:Payroll:Commission.
+        # Offset rules: match memo_regex against transaction memo, extract
+        # amount (regex group 1), emit a double-entry offset transaction.
+        # Each rule: {memo_regex, debit_account, credit_account, description}.
+        # Description is a template with {payee}, {amount}, {group1}, etc.
         import re as _re
-        self.commission_rules = []
-        for cr in cfg.get("commission_rules") or []:
-            check(isinstance(cr, dict) and "memo_regex" in cr and "horse_account" in cr,
-                  f"commission_rules entry needs memo_regex and horse_account: {cr!r}")
-            self.commission_rules.append({
+        self.offset_rules = []
+        for cr in cfg.get("offset_rules") or []:
+            check(isinstance(cr, dict) and "memo_regex" in cr
+                  and "debit_account" in cr and "credit_account" in cr,
+                  f"offset_rules entry needs memo_regex, debit_account, credit_account: {cr!r}")
+            self.offset_rules.append({
                 "regex": _re.compile(cr["memo_regex"], _re.IGNORECASE),
-                "horse_account": cr["horse_account"],
+                "debit_account": cr["debit_account"],
+                "credit_account": cr["credit_account"],
+                "description": cr.get("description", "Offset for {payee}"),
             })
-        self.commission_expense_account = "Root Account:Zia Operating Expenses:Overhead:Payroll:Commission"
 
     def check_payee(self, source, checknum):
         """Handwritten payee for a check number, from checknum: dict values.
@@ -411,16 +412,16 @@ class Rules:
         # GnuCash convention: unmapped accounts go to "Unspecified"
         return "Unspecified"
 
-    def commission_splits(self, memo, payee):
-        """Check memo against commission_rules. Returns list of
-        (horse_account, amount, description) for each match, or [].
-        Amount is always positive; the caller negates for the expense side.
+    def offset_splits(self, memo, payee):
+        """Check memo against offset_rules. Returns list of
+        (debit_account, credit_account, amount, description) for each match.
+        Amount is always positive; debit gets +amount, credit gets -amount.
         The regex must have one group: the amount (group 1).
-        Horse name is derived from the horse_account path.
+        Description template supports {payee}, {amount}.
         """
         results = []
         memo = memo or ""
-        for cr in self.commission_rules:
+        for cr in self.offset_rules:
             for m in cr["regex"].finditer(memo):
                 try:
                     amt = float(m.group(1).replace(",", ""))
@@ -428,9 +429,8 @@ class Rules:
                     continue
                 if amt <= 0:
                     continue
-                horse = cr["horse_account"].split(":")[-1]
-                desc = f"Commission to {payee} on {horse}" if payee else f"Commission on {horse}"
-                results.append((cr["horse_account"], amt, desc))
+                desc = cr["description"].format(payee=payee or "", amount=f"{amt:,.2f}")
+                results.append((cr["debit_account"], cr["credit_account"], amt, desc))
         return results
 
     def categorize(self, source, text, date, plaid=None, checknum=None,
@@ -1578,34 +1578,34 @@ def main():
         if memo:
             t["memo"] = memo
 
-    # ---- commissions: memo_regex -> double-entry offset transactions --------
-    # For each transaction whose memo matches a commission rule, emit an
-    # additional balanced transaction: +amount to the horse capital account,
-    # -amount to Overhead:Payroll:Commission. Mirrors the 2025 GnuCash pattern.
-    commission_txns = []
+    # ---- offsets: memo_regex -> double-entry offset transactions ------------
+    # For each transaction whose memo matches an offset rule, emit an
+    # additional balanced transaction: +amount to debit_account,
+    # -amount to credit_account.
+    offset_txns = []
     for t in txns:
         if not t.get("in_period", True):
             continue
-        for horse_acct, amt, desc in rules.commission_splits(t.get("memo"), t.get("payee")):
-            commission_txns.append({
+        for debit_acct, credit_acct, amt, desc in rules.offset_splits(t.get("memo"), t.get("payee")):
+            offset_txns.append({
                 "date": t["date"],
                 "amount": 0.0,  # balanced splits
                 "payee": t.get("payee", ""),
                 "memo": desc,
                 "source": t["source"],
-                "transfer": rules.commission_expense_account,  # for review report
-                "how": f'commission:"{desc}"',
+                "transfer": credit_acct,  # for review report
+                "how": f'offset:"{desc}"',
                 "in_period": True,
                 "splits": [
-                    {"account": horse_acct, "amount": amt, "memo": desc},
-                    {"account": rules.commission_expense_account, "amount": -amt, "memo": desc},
+                    {"account": debit_acct, "amount": amt, "memo": desc},
+                    {"account": credit_acct, "amount": -amt, "memo": desc},
                 ],
                 "acct_id": t.get("acct_id"),
-                "fitid": f"commission-{t.get('fitid', '')}-{amt:.2f}",
+                "fitid": f"offset-{t.get('fitid', '')}-{amt:.2f}",
             })
-    if commission_txns:
-        print(f"generated {len(commission_txns)} commission transactions", file=sys.stderr)
-    txns.extend(commission_txns)
+    if offset_txns:
+        print(f"generated {len(offset_txns)} offset transactions", file=sys.stderr)
+    txns.extend(offset_txns)
 
     # ---- annotate: airline ticket flight details -> memo -------------------
     # Airline ticket transactions carry flight details (traveler, flights,
