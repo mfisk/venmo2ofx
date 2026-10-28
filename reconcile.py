@@ -1580,8 +1580,9 @@ def main():
 
     # ---- offsets: memo_regex -> double-entry offset transactions ------------
     # For each transaction whose memo matches an offset rule, emit an
-    # additional balanced transaction: +amount to debit_account,
-    # -amount to credit_account.
+    # additional transaction out of the credit account: -amount from
+    # credit_account (as the !Account source), +amount to debit_account
+    # (as the L transfer). Uses standard Header+L format, no splits needed.
     offset_txns = []
     for t in txns:
         if not t.get("in_period", True):
@@ -1589,17 +1590,13 @@ def main():
         for debit_acct, credit_acct, amt, desc in rules.offset_splits(t.get("memo"), t.get("payee")):
             offset_txns.append({
                 "date": t["date"],
-                "amount": 0.0,  # balanced splits
+                "amount": -amt,  # out of the credit account
                 "payee": t.get("payee", ""),
                 "memo": desc,
-                "source": t["source"],
-                "transfer": credit_acct,  # for review report
+                "source": credit_acct,  # groups under its own !Account stanza
+                "transfer": debit_acct,  # L line
                 "how": f'offset:"{desc}"',
                 "in_period": True,
-                "splits": [
-                    {"account": debit_acct, "amount": amt, "memo": desc},
-                    {"account": credit_acct, "amount": -amt, "memo": desc},
-                ],
                 "acct_id": t.get("acct_id"),
                 "fitid": f"offset-{t.get('fitid', '')}-{amt:.2f}",
             })
