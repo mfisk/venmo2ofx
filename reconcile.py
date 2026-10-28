@@ -313,6 +313,21 @@ class Rules:
                     self.mcc_index[(src, str(mcc))] = acct
                 for pfc in cond.get("pfc") or []:
                     self.pfc_index[(src, pfc)] = acct
+        # Commission rules: match memo_regex against transaction memo, extract
+        # horse name (group 1) and amount (group 2), emit a double-entry
+        # commission transaction (+horse capital, -commission expense).
+        # Each rule: {memo_regex, horse_account}. The commission expense
+        # account is fixed: Overhead:Payroll:Commission.
+        import re as _re
+        self.commission_rules = []
+        for cr in cfg.get("commission_rules") or []:
+            check(isinstance(cr, dict) and "memo_regex" in cr and "horse_account" in cr,
+                  f"commission_rules entry needs memo_regex and horse_account: {cr!r}")
+            self.commission_rules.append({
+                "regex": _re.compile(cr["memo_regex"], _re.IGNORECASE),
+                "horse_account": cr["horse_account"],
+            })
+        self.commission_expense_account = "Root Account:Zia Operating Expenses:Overhead:Payroll:Commission"
 
     def check_payee(self, source, checknum):
         """Handwritten payee for a check number, from checknum: dict values.
@@ -395,6 +410,28 @@ class Rules:
             return hint
         # GnuCash convention: unmapped accounts go to "Unspecified"
         return "Unspecified"
+
+    def commission_splits(self, memo, payee):
+        """Check memo against commission_rules. Returns list of
+        (horse_account, amount, description) for each match, or [].
+        Amount is always positive; the caller negates for the expense side.
+        The regex must have one group: the amount (group 1).
+        Horse name is derived from the horse_account path.
+        """
+        results = []
+        memo = memo or ""
+        for cr in self.commission_rules:
+            for m in cr["regex"].finditer(memo):
+                try:
+                    amt = float(m.group(1).replace(",", ""))
+                except (IndexError, ValueError):
+                    continue
+                if amt <= 0:
+                    continue
+                horse = cr["horse_account"].split(":")[-1]
+                desc = f"Commission to {payee} on {horse}" if payee else f"Commission on {horse}"
+                results.append((cr["horse_account"], amt, desc))
+        return results
 
     def categorize(self, source, text, date, plaid=None, checknum=None,
                      fitid=None, amount=None):
@@ -1541,6 +1578,35 @@ def main():
         if memo:
             t["memo"] = memo
 
+    # ---- commissions: memo_regex -> double-entry offset transactions --------
+    # For each transaction whose memo matches a commission rule, emit an
+    # additional balanced transaction: +amount to the horse capital account,
+    # -amount to Overhead:Payroll:Commission. Mirrors the 2025 GnuCash pattern.
+    commission_txns = []
+    for t in txns:
+        if not t.get("in_period", True):
+            continue
+        for horse_acct, amt, desc in rules.commission_splits(t.get("memo"), t.get("payee")):
+            commission_txns.append({
+                "date": t["date"],
+                "amount": 0.0,  # balanced splits
+                "payee": t.get("payee", ""),
+                "memo": desc,
+                "source": t["source"],
+                "transfer": rules.commission_expense_account,  # for review report
+                "how": f'commission:"{desc}"',
+                "in_period": True,
+                "splits": [
+                    {"account": horse_acct, "amount": amt, "memo": desc},
+                    {"account": rules.commission_expense_account, "amount": -amt, "memo": desc},
+                ],
+                "acct_id": t.get("acct_id"),
+                "fitid": f"commission-{t.get('fitid', '')}-{amt:.2f}",
+            })
+    if commission_txns:
+        print(f"generated {len(commission_txns)} commission transactions", file=sys.stderr)
+    txns.extend(commission_txns)
+
     # ---- annotate: airline ticket flight details -> memo -------------------
     # Airline ticket transactions carry flight details (traveler, flights,
     # route, dates, confirmation) in airline-tickets-2026.md. Append them
@@ -1620,7 +1686,16 @@ def main():
                 buf.write(f"P{clean(t['payee'])}\n")
             if clean(t["memo"]):
                 buf.write(f"M{clean(t['memo'])}\n")
-            buf.write(f"L{t['transfer']}\n")
+            if t.get("splits"):
+                # Split transaction (e.g. commission offsets): S/E/$ lines,
+                # no L line. Splits must sum to the T amount.
+                for s in t["splits"]:
+                    buf.write(f"S{s['account']}\n")
+                    if clean(s.get("memo")):
+                        buf.write(f"E{clean(s['memo'])}\n")
+                    buf.write(f"${s['amount']:.2f}\n")
+            else:
+                buf.write(f"L{t['transfer']}\n")
             buf.write("^\n")
     qif_bytes = buf.getvalue().encode("utf-8")
     sha256 = hashlib.sha256(qif_bytes).hexdigest()
