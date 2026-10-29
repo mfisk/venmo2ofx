@@ -347,14 +347,15 @@ class Rules:
                         for num in nums:
                             self.checknum_index[(src, str(num))] = acct
                 if "fitid" in ctx and "account" in ctx:
-                    # Fail closed: fitid with other filters (except desc) is ambiguous.
-                    # Fitid+desc is OR semantics (both mechanisms). Fitid+mcc/pfc/amount
-                    # would be AND, but the separate index ignores them. Reject.
+                    # Consistency: if: is always AND across top-level terms.
+                    # Fitid cannot be combined with any other filter — if you
+                    # want OR, use separate rules.
                     other_filters = [k for k in ctx.keys()
-                                     if k in ("mcc", "pfc", "amount", "no_mcc", "no_pfc")]
+                                     if k in ("desc", "mcc", "pfc", "amount",
+                                              "no_mcc", "no_pfc", "checks", "checknum")]
                     check(not other_filters,
-                          f"fitid cannot be combined with {other_filters} in if: "
-                          f"(ambiguous AND/OR). Use fitid alone or with desc only: {node!r}")
+                          f"fitid cannot be combined with other filters in if: "
+                          f"(if: is always AND). Split into separate rules for OR: {node!r}")
                     src = ctx.get("source")
                     acct = ctx["account"]
                     fids = ctx["fitid"]
