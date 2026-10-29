@@ -613,7 +613,7 @@ def parse_csv(path, account_hint=None):
                 "amount": amount,
                 "payee": desc,
                 "memo": memo,
-                "fitid": "csv-" + hashlib.sha1(key_src.encode()).hexdigest()[:16],
+                "fitid": None,
                 "checknum": checknum,
                 "plaid": None,
                 "meta": {"from_to": fromto} if fromto else {},
@@ -732,7 +732,7 @@ def parse_qb_xls(path, account_hint=None):
             "amount": amount,
             "payee": desc,
             "memo": memo,
-            "fitid": "qbxls-" + hashlib.sha1(key_src.encode()).hexdigest()[:16],
+            "fitid": None,
             "checknum": ref,
             "plaid": None,
             "meta": {"qb_type": str(get(r, col("type"))) if col("type") is not None else ""},
@@ -813,9 +813,6 @@ def enrich_from_register(bank_txns, register_entries):
             b["memo"] = f"{b['memo']} | {reg['memo']}" if b["memo"] else reg["memo"]
         if reg["meta"].get("qb_type"):
             b["meta"]["qb_type"] = reg["meta"]["qb_type"]
-        # Recompute fitid since payee/memo changed
-        key_src = f"{b.get('account_hint')}|{b['date']}|{b['amount']:.2f}|{b['payee']}"
-        b["fitid"] = "qbm-" + hashlib.sha1(key_src.encode()).hexdigest()[:16]
         if len(candidates) > 1 or len(reg_by_key[key]) > 1:
             b["meta"]["enriched"] = "register-ambiguous"
             ambiguous += 1
@@ -986,7 +983,7 @@ def parse_schwab_brokerage_json(path, acct_id):
             "amount": amount,
             "payee": payee,
             "memo": memo,
-            "fitid": "schwab-" + hashlib.sha1(key_src.encode()).hexdigest()[:16],
+            "fitid": None,
             "checknum": "",
             "plaid": None,
             "meta": {"schwab": {k: r.get(k) for k in
@@ -1355,18 +1352,18 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
     dropped, used = set(), set()
     pair_count, pair_log = 0, []
     for gap, _, pid, P, M in triples:
-        if P["fitid"] in used or M["fitid"] in used:
+        if id(P) in used or id(M) in used:
             continue
         # Keep the earlier-dated side so the transfer lands in the right
         # month; on a tie keep the rule-identified side (P). The kept
         # side's transfer account becomes the true counterparty account.
         keep, drop = (M, P) if M["date"] < P["date"] else (P, M)
         keep["transfer"] = drop["source"]
-        dropped.add(drop["fitid"])
-        used.add(P["fitid"])
-        used.add(M["fitid"])
+        dropped.add(id(drop))
+        used.add(id(P))
+        used.add(id(M))
         pair_count += 1
-        pair_log.append({"kept": keep["fitid"], "dropped": drop["fitid"],
+        pair_log.append({"kept": keep.get("fitid"), "dropped": drop.get("fitid"),
                          "gap_days": gap, "candidates": cand_count[pid]})
         if verbose:
             print(f"paired: {keep['date']} {keep['source'].split(':')[-1]} -> "
@@ -1375,8 +1372,8 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
                   f"dropped {drop['source'].split(':')[-1]} side {drop['date']})",
                   file=sys.stderr)
 
-    kept = [t for t in txns if t["fitid"] not in dropped]
-    unpaired = [P for P in transfers if P["fitid"] not in used]
+    kept = [t for t in txns if id(t) not in dropped]
+    unpaired = [P for P in transfers if id(P) not in used]
     return kept, dropped, pair_count, unpaired, pair_log
 
 
@@ -1675,8 +1672,8 @@ def main():
     # still find their mirrors.
     kept, dropped, pair_count, unpaired, pair_log = pair_transfers(
         txns, rules, verbose=args.verbose)
-    check({t["fitid"] for t in kept} | dropped == {t["fitid"] for t in txns}
-          and not ({t["fitid"] for t in kept} & dropped),
+    check({id(t) for t in kept} | dropped == {id(t) for t in txns}
+          and not ({id(t) for t in kept} & dropped),
           "merge lost or duplicated transactions")
     if unpaired and not args.allow_unpaired:
         # For each unpaired transfer, find candidate mirrors: matching amount
@@ -1684,12 +1681,12 @@ def main():
         # only -- never auto-paired.
         input_accounts = set(e["account"] for e in rules.source_accounts)
         lines = []
-        for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])):
+        for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
             lines.append(
                 f"  {t['date']} {t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
                 f"{clean(t['payee'])} (file {t['file']})")
             for M in txns:
-                if M["fitid"] == t["fitid"]:
+                if M is t:
                     continue
                 if M["source"] not in input_accounts or M["source"] == t["source"]:
                     continue
@@ -1705,7 +1702,7 @@ def main():
             f"ERROR: {len(unpaired)} transfer(s) between import accounts with no "
             f"mirror found. Refusing to half-record; extend the pull or add "
             f"the missing statement.\n{detail}")
-    for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])):
+    for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
         print(f"unpaired transfer (no mirror, kept as categorized): {t['date']} "
               f"{t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
               f"{clean(t['payee'])}", file=sys.stderr)
@@ -1713,9 +1710,9 @@ def main():
     # transactions in OTHER source accounts (opposite amount, within 7 days).
     # Logged as suggestions only -- never auto-paired.
     input_accounts = set(e["account"] for e in rules.source_accounts)
-    for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])):
+    for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
         for M in txns:
-            if M["fitid"] == t["fitid"]:
+            if M is t:
                 continue
             if M["source"] not in input_accounts or M["source"] == t["source"]:
                 continue
@@ -1787,7 +1784,7 @@ def main():
             r.write(f"  {n:5d}  {acct}\n")
         if unpaired:
             r.write("\nUNPAIRED TRANSFERS (no mirror found):\n")
-            for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])):
+            for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
                 r.write(f"  {t['date']} {t['amount']:10.2f}  {t['source'].split(':')[-1]:22s} -> "
                         f"{t['transfer'].split(':')[-1]:22s}  {clean(t['payee'])}\n")
         if unknown:
