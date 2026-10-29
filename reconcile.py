@@ -132,7 +132,6 @@ class Rules:
         #           no_mcc: true
         flat = []
         hand_count = 0
-        self.offset_rules = []  # collected by flatten() from memo_regex nodes
         # Matching criteria keys (a leaf rule needs account + at least one).
         # Amount conditions use signed amounts: negative = debit (money out),
         # positive = credit (money in). The amount value can be an exact
@@ -145,9 +144,8 @@ class Rules:
         # All valid keys on a rule node.
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
-                 "amount", "rules", "memo_regex", "debit_account",
-                 "credit_account", "description", "if", "then",
-                 "debit", "credit", "describe_as"}
+                 "amount", "rules", "if", "then",
+                 "debit", "credit", "describe_as", "offsets"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
             for node in nodes:
@@ -184,14 +182,13 @@ class Rules:
                         ctx["account"] = t
                     elif isinstance(t, dict):
                         # Full stanza: map verb keys to internal keys
-                        if "debit" in t:
-                            ctx["debit_account"] = t["debit"]
-                        if "credit" in t:
-                            ctx["credit_account"] = t["credit"]
-                        if "describe_as" in t:
-                            ctx["description"] = t["describe_as"]
+                        # Offsets are handled separately (not flattened into ctx)
+                        if "offsets" in t:
+                            ctx["_offsets"] = t["offsets"]
                         if "account" in t:
                             ctx["account"] = t["account"]
+                        # Legacy: direct debit/credit in then (for offset rules)
+                        # These are now handled via offsets: list instead
                     else:
                         check(False, f"then must be a string or dict at {where}: {t!r}")
                 # Leaf rule: has account + at least one criterion.
@@ -246,23 +243,11 @@ class Rules:
                     check(not ("pfc" in cond and cond.get("no_pfc")),
                           f"pfc + no_pfc can never fire at {where}")
                     src = ctx.get("source")  # None = matches any source
+                    offsets = ctx.get("_offsets")  # List of offset dicts, or None
                     for pat in pats:
-                        flat.append((src, ctx["account"], pat, cond or None))
+                        flat.append((src, ctx["account"], pat, cond or None, offsets))
                         if src is None:
                             hand_count += 1
-                # Offset rule: has memo_regex + debit_account + credit_account.
-                # Collected separately, not added to flat.
-                elif "memo_regex" in ctx:
-                    import re as _re
-                    check("debit_account" in ctx and "credit_account" in ctx,
-                          f"offset rule needs debit_account and credit_account at {where}: {node!r}")
-                    self.offset_rules.append({
-                        "regex": _re.compile(ctx["memo_regex"], _re.IGNORECASE),
-                        "debit_account": ctx["debit_account"],
-                        "credit_account": ctx["credit_account"],
-                        "description": ctx.get("description", "Offset for {payee}"),
-                        "source": ctx.get("source"),  # None = any source
-                    })
                 # Recurse into nested rules, if any.
                 if "rules" in node:
                     children = node["rules"]
@@ -378,7 +363,7 @@ class Rules:
         # the fallback indexes. Build those indexes here.
         self.mcc_index = {}  # (source, mcc) -> account
         self.pfc_index = {}  # (source, pfc_detailed) -> account
-        for src, acct, pat, cond in self.rules_flat:
+        for src, acct, pat, cond, _offsets in self.rules_flat:
             if pat is None and cond:
                 # Pattern-less rule: its conditions go to the fallback index.
                 for mcc in cond.get("mcc") or []:
@@ -468,30 +453,6 @@ class Rules:
         # GnuCash convention: unmapped accounts go to "Unspecified"
         return "Unspecified"
 
-    def offset_splits(self, memo, payee, source=None):
-        """Check memo against offset_rules. Returns list of
-        (debit_account, credit_account, amount, description) for each match.
-        Amount is always positive; debit gets +amount, credit gets -amount.
-        The regex must have one group: the amount (group 1).
-        Description template supports {payee}, {amount}.
-        If a rule has a source, it only matches that source.
-        """
-        results = []
-        memo = memo or ""
-        for cr in self.offset_rules:
-            if cr.get("source") is not None and cr["source"] != source:
-                continue
-            for m in cr["regex"].finditer(memo):
-                try:
-                    amt = float(m.group(1).replace(",", ""))
-                except (IndexError, ValueError):
-                    continue
-                if amt <= 0:
-                    continue
-                desc = cr["description"].format(payee=payee or "", amount=f"{amt:,.2f}")
-                results.append((cr["debit_account"], cr["credit_account"], amt, desc))
-        return results
-
     def categorize(self, source, text, date, plaid=None, checknum=None,
                      fitid=None, amount=None):
         """Categorize a transaction.
@@ -519,15 +480,15 @@ class Rules:
             if hit is None:
                 hit = self.checknum_index.get((None, str(checknum)))
             if hit is not None:
-                return resolve(hit), f'checknum:"{checknum}"'
+                return resolve(hit), f'checknum:"{checknum}"', None
         # Exact FITID match: beats description patterns (one-off Venmo etc.).
         if fitid:
             hit = self.fitid_index.get((source, str(fitid)))
             if hit is None:
                 hit = self.fitid_index.get((None, str(fitid)))
             if hit is not None:
-                return resolve(hit), f'fitid:"{fitid}"'
-        for rule_src, account, m, cond in self.rules_flat:
+                return resolve(hit), f'fitid:"{fitid}"', None
+        for rule_src, account, m, cond, offsets in self.rules_flat:
             # If rule has a source, it must match; None means any source
             if rule_src is not None and rule_src != source:
                 continue
@@ -544,8 +505,8 @@ class Rules:
             if m is None:
                 op, threshold = cond["amount"]
                 _desc = f"{op}{threshold:g}"
-                return resolve(account), f'amount:{_desc}'
-            return resolve(account), f'rule:"{m}"'
+                return resolve(account), f'amount:{_desc}', offsets
+            return resolve(account), f'rule:"{m}"', offsets
         # Code-based rules (MCC, then PFC) are the last resort.
         if plaid:
             mcc = plaid.get("mcc")
@@ -553,13 +514,13 @@ class Rules:
                 # Try source-specific, then global (None source)
                 acct = self.mcc_index.get((source, str(mcc))) or self.mcc_index.get((None, str(mcc)))
                 if acct:
-                    return resolve(acct), f'mcc:{mcc}'
+                    return resolve(acct), f'mcc:{mcc}', None
             pfc = plaid.get("pfc_detailed")
             if pfc:
                 acct = self.pfc_index.get((source, pfc)) or self.pfc_index.get((None, pfc))
                 if acct:
-                    return resolve(acct), f'pfc:{pfc}'
-        return UNKNOWN, "unmatched"
+                    return resolve(acct), f'pfc:{pfc}', None
+        return UNKNOWN, "unmatched", None
 
 
 # ---------------------------------------------------------------------------
@@ -1619,11 +1580,12 @@ def main():
         source = rules.source_account(t["acct_id"], t.get("account_hint"),
                                       t.get("metadata"))
         text = f"{t['payee']} {t['payee']} {t['memo']}".strip()
-        acct, how = rules.categorize(source, text, t["date"], plaid=t.get("plaid"),
+        acct, how, offsets = rules.categorize(source, text, t["date"], plaid=t.get("plaid"),
                                      checknum=t.get("checknum"),
                                      fitid=t.get("fitid"),
                                      amount=t.get("amount"))
         t["source"], t["transfer"], t["how"] = source, acct, how
+        t["_offsets"] = offsets  # List of offset dicts from the matched rule
         # Paper checks: replace the generic "Check Paid #NNN" payee with the
         # handwritten payee from the check image (checknum: dict values in
         # reconcile.yaml). Applied after categorize so rule matching still sees
@@ -1637,20 +1599,53 @@ def main():
         if memo:
             t["memo"] = memo
 
-    # ---- offsets: memo_regex -> double-entry offset transactions ------------
-    # For each transaction whose memo matches an offset rule, emit an
-    # additional transaction out of the credit account: -amount from
-    # credit_account (as the !Account source), +amount to debit_account
-    # (as the L transfer). Uses standard Header+L format, no splits needed.
+    # ---- offsets: per-rule conditional offset transactions -------------------
+    # Each matched rule may have offsets: in its then:. Each offset has its
+    # own if: to test (e.g. memo_regex). Matching offsets generate an
+    # additional double-entry transaction: -amount from credit account
+    # (as the !Account source), +amount to debit account (as the L transfer).
+    import re as _re
     offset_txns = []
     for t in txns:
         if not t.get("in_period", True):
             continue
-        for debit_acct, credit_acct, amt, desc in rules.offset_splits(t.get("memo"), t.get("payee"), t.get("source")):
+        offsets = t.get("_offsets") or []
+        memo = t.get("memo") or ""
+        payee = t.get("payee") or ""
+        for off in offsets:
+            off_if = off.get("if")
+            # Test the offset's if: condition
+            matched = False
+            amt = None
+            if isinstance(off_if, str):
+                # Bare string = desc substring match
+                if off_if.lower() in f"{payee} {memo}".lower():
+                    matched = True
+            elif isinstance(off_if, dict):
+                # Check memo_regex first (extracts amount from group 1)
+                if "memo_regex" in off_if:
+                    m = _re.search(off_if["memo_regex"], memo, _re.IGNORECASE)
+                    if m:
+                        try:
+                            amt = float(m.group(1).replace(",", ""))
+                            matched = amt > 0
+                        except (IndexError, ValueError):
+                            matched = False
+                # Other filters (desc, etc.) - AND semantics
+                # For now, only memo_regex is supported in offsets
+            if not matched:
+                continue
+            # Amount must come from regex group 1 for memo_regex offsets
+            if amt is None:
+                continue
+            debit_acct = off.get("debit")
+            credit_acct = off.get("credit")
+            desc_tmpl = off.get("describe_as", "Offset for {payee}")
+            desc = desc_tmpl.format(payee=payee, amount=f"{amt:,.2f}")
             offset_txns.append({
                 "date": t["date"],
                 "amount": -amt,  # out of the credit account
-                "payee": t.get("payee", ""),
+                "payee": payee,
                 "memo": desc,
                 "source": credit_acct,  # groups under its own !Account stanza
                 "transfer": debit_acct,  # L line

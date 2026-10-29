@@ -44,7 +44,7 @@ rules:
     r = Rules(path)
     assert len(r.rules_flat) == 2
     # Both inherit source
-    for src, acct, pat, cond in r.rules_flat:
+    for src, acct, pat, cond, _ in r.rules_flat:
         assert src == 'Assets:Checking', f"got {src}"
     # Child can override
     path2 = write_yaml('''
@@ -57,7 +57,7 @@ rules:
         account: Expenses:Snacks
 ''')
     r2 = Rules(path2)
-    accts = {pat: acct for _, acct, pat, _ in r2.rules_flat}
+    accts = {pat: acct for _, acct, pat, _, _ in r2.rules_flat}
     assert accts['PIZZA'] == 'Expenses:Food'
     assert accts['BURGER'] == 'Expenses:Snacks'
     os.unlink(path)
@@ -81,7 +81,7 @@ rules:
     # Pattern-less rules are in rules_flat with pat=None (skipped in main loop,
     # checked via fallback indexes)
     assert len(r.rules_flat) == 2
-    assert all(pat is None for _, _, pat, _ in r.rules_flat)
+    assert all(pat is None for _, _, pat, _, _ in r.rules_flat)
     os.unlink(path)
     print("PASS: code rules")
 
@@ -131,19 +131,19 @@ rules:
 ''')
     r = Rules(path)
     # With matching MCC
-    acct, _ = r.categorize('Assets:Checking', 'QUICK STOP 123',
+    acct, _, _ = r.categorize('Assets:Checking', 'QUICK STOP 123',
                            None, plaid={'mcc': '5541', 'pfc_detailed': None})
     assert acct == 'Expenses:Fuel', f"got {acct}"
     # With wrong MCC
-    acct, _ = r.categorize('Assets:Checking', 'QUICK STOP 123',
+    acct, _, _ = r.categorize('Assets:Checking', 'QUICK STOP 123',
                            None, plaid={'mcc': '5411', 'pfc_detailed': None})
     assert acct != 'Expenses:Fuel', f"should not desc: {acct}"
     # no_mcc with no MCC
-    acct, _ = r.categorize('Assets:Checking', 'CASH FUEL',
+    acct, _, _ = r.categorize('Assets:Checking', 'CASH FUEL',
                            None, plaid={'mcc': None, 'pfc_detailed': None})
     assert acct == 'Expenses:Fuel', f"got {acct}"
     # no_mcc with MCC present
-    acct, _ = r.categorize('Assets:Checking', 'CASH FUEL',
+    acct, _, _ = r.categorize('Assets:Checking', 'CASH FUEL',
                            None, plaid={'mcc': '5541', 'pfc_detailed': None})
     assert acct != 'Expenses:Fuel', f"should not desc: {acct}"
     os.unlink(path)
@@ -183,11 +183,11 @@ rules:
     desc: SPECIFIC
 ''')
     r = Rules(path)
-    acct, _ = r.categorize('Assets:Savings', 'GENERIC', None, plaid=None)
+    acct, _, _ = r.categorize('Assets:Savings', 'GENERIC', None, plaid=None)
     assert acct == 'Expenses:Any', f"got {acct}"
-    acct, _ = r.categorize('Assets:Savings', 'SPECIFIC', None, plaid=None)
+    acct, _, _ = r.categorize('Assets:Savings', 'SPECIFIC', None, plaid=None)
     assert acct != 'Expenses:Scoped', f"should not match scoped: {acct}"
-    acct, _ = r.categorize('Assets:Checking', 'SPECIFIC', None, plaid=None)
+    acct, _, _ = r.categorize('Assets:Checking', 'SPECIFIC', None, plaid=None)
     assert acct == 'Expenses:Scoped', f"got {acct}"
     os.unlink(path)
     print("PASS: source scoping")
@@ -205,7 +205,7 @@ rules:
     desc: CARD PAYMENT
 ''')
     r = Rules(path)
-    acct, how = r.categorize('Assets:Checking', 'CARD PAYMENT THANK YOU',
+    acct, how, _ = r.categorize('Assets:Checking', 'CARD PAYMENT THANK YOU',
                              None, plaid=None)
     assert acct == 'Liabilities:Card', f"got {acct}"
     os.unlink(path)
@@ -236,22 +236,22 @@ rules:
         path = f.name
     r = Rules(path)
     # Debit with INTUIT -> Fees
-    acct, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=-50.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=-50.0)
     assert acct == 'Expenses:Fees', f"debit got {acct}"
     # Credit with INTUIT -> Revenue
-    acct, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=1000.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'INTUIT *QBOOKS', None, amount=1000.0)
     assert acct == 'Income:Revenue', f"credit got {acct}"
     # Exact amount match
-    acct, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=100.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=100.0)
     assert acct == 'Expenses:Exact', f"exact got {acct}"
     # Exact amount non-match -> falls to amount-only credit catch-all
-    acct, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=99.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'EXACT MATCH', None, amount=99.0)
     assert acct == 'Expenses:Credits', f"non-exact got {acct}"
     # Amount-only catch-all for credits
-    acct, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=5.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=5.0)
     assert acct == 'Expenses:Credits', f"catch-all got {acct}"
     # Debit with random desc -> no match (no debit catch-all)
-    acct, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=-5.0)
+    acct, _, _ = r.categorize('Assets:Checking', 'RANDOM DESC', None, amount=-5.0)
     assert acct is None or "Unknown" in str(acct), f"debit catch-all got {acct}"
     os.unlink(path)
     print("PASS: amount conditions")
