@@ -145,7 +145,8 @@ class Rules:
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
                  "amount", "rules", "if", "then",
-                 "debit", "credit", "describe_as", "offsets"}
+                 "debit", "credit", "describe_as", "offsets",
+                 "fallback"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
             for node in nodes:
@@ -259,8 +260,11 @@ class Rules:
                           f"pfc + no_pfc can never fire at {where}")
                     src = ctx.get("source")  # None = matches any source
                     offsets = ctx.get("_offsets")  # List of offset dicts, or None
+                    fallback = ctx.get("fallback", False)  # True = fallback rule
+                    check(isinstance(fallback, bool),
+                          f"fallback must be true/false at {where}")
                     for pat in pats:
-                        flat.append((src, ctx["account"], pat, cond or None, offsets))
+                        flat.append((src, ctx["account"], pat, cond or None, offsets, fallback))
                         if src is None:
                             hand_count += 1
                 # Recurse into nested rules, if any.
@@ -364,7 +368,7 @@ class Rules:
         # the fallback indexes. Build those indexes here.
         self.mcc_index = {}  # (source, mcc) -> account
         self.pfc_index = {}  # (source, pfc_detailed) -> account
-        for src, acct, pat, cond, _offsets in self.rules_flat:
+        for src, acct, pat, cond, _offsets, _fallback in self.rules_flat:
             if pat is None and cond:
                 # Pattern-less rule: its conditions go to the fallback index.
                 for mcc in cond.get("mcc") or []:
@@ -484,10 +488,15 @@ class Rules:
             if hit is None:
                 hit = self.fitid_index.get((None, str(fitid)))
             if hit is not None:
-                return resolve(hit), f'fitid:"{fitid}"', None
-        for rule_src, account, m, cond, offsets in self.rules_flat:
+                return resolve(hit), f'fitid:"{fitid}"', None, False
+        for rule_src, account, m, cond, offsets, fallback in self.rules_flat:
             # If rule has a source, it must match; None means any source
             if rule_src is not None and rule_src != source:
+                continue
+            # Skip fallback rules on first pass; they're tried after all
+            # regular rules. This ensures a specific rule always beats a
+            # fallback, regardless of sort order.
+            if fallback:
                 continue
             # Pattern-less rules (m=None) are code rules: skip here, they're
             # checked via the fallback indexes below. Amount-only rules are
@@ -502,8 +511,25 @@ class Rules:
             if m is None:
                 op, threshold = cond["amount"]
                 _desc = f"{op}{threshold:g}"
-                return resolve(account), f'amount:{_desc}', offsets
-            return resolve(account), f'rule:"{m}"', offsets
+                return resolve(account), f'amount:{_desc}', offsets, False
+            return resolve(account), f'rule:"{m}"', offsets, False
+        # Second pass: fallback rules only.
+        for rule_src, account, m, cond, offsets, fallback in self.rules_flat:
+            if not fallback:
+                continue
+            if rule_src is not None and rule_src != source:
+                continue
+            if m is None and not (cond and "amount" in cond):
+                continue
+            if m is not None and fold(m) not in folded:
+                continue
+            if cond is not None and not self._cond_ok(cond, plaid, amount, checknum):
+                continue
+            if m is None:
+                op, threshold = cond["amount"]
+                _desc = f"{op}{threshold:g}"
+                return resolve(account), f'amount:{_desc} (fallback)', offsets, True
+            return resolve(account), f'rule:"{m}" (fallback)', offsets, True
         # Code-based rules (MCC, then PFC) are the last resort.
         if plaid:
             mcc = plaid.get("mcc")
@@ -511,13 +537,13 @@ class Rules:
                 # Try source-specific, then global (None source)
                 acct = self.mcc_index.get((source, str(mcc))) or self.mcc_index.get((None, str(mcc)))
                 if acct:
-                    return resolve(acct), f'mcc:{mcc}', None
+                    return resolve(acct), f'mcc:{mcc}', None, False
             pfc = plaid.get("pfc_detailed")
             if pfc:
                 acct = self.pfc_index.get((source, pfc)) or self.pfc_index.get((None, pfc))
                 if acct:
-                    return resolve(acct), f'pfc:{pfc}', None
-        return UNKNOWN, "unmatched", None
+                    return resolve(acct), f'pfc:{pfc}', None, False
+        return UNKNOWN, "unmatched", None, False
 
 
 # ---------------------------------------------------------------------------
@@ -1331,9 +1357,10 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
             return False
         if abs((M["date"] - P["date"]).days) > window_days:
             return False
-        # The mirror is the uncategorized counter-entry or the symmetric
+        # The mirror is the uncategorized counter-entry, a fallback-matched
+        # entry (treated as uncategorized for pairing), or the symmetric
         # leg; never a leg of some other transfer.
-        if M["transfer"] != P["source"] and M["transfer"] != UNKNOWN:
+        if M["transfer"] != P["source"] and M["transfer"] != UNKNOWN and not M.get("_fallback"):
             return False
         return True
 
@@ -1574,12 +1601,13 @@ def main():
         source = rules.source_account(t["acct_id"], t.get("account_hint"),
                                       t.get("metadata"))
         text = f"{t['payee']} {t['payee']} {t['memo']}".strip()
-        acct, how, offsets = rules.categorize(source, text, t["date"], plaid=t.get("plaid"),
+        acct, how, offsets, is_fallback = rules.categorize(source, text, t["date"], plaid=t.get("plaid"),
                                      checknum=t.get("checknum"),
                                      fitid=t.get("fitid"),
                                      amount=t.get("amount"))
         t["source"], t["transfer"], t["how"] = source, acct, how
         t["_offsets"] = offsets  # List of offset dicts from the matched rule
+        t["_fallback"] = is_fallback  # True if matched by a fallback rule
         # Paper checks: replace the generic "Check Paid #NNN" payee with the
         # handwritten payee from the check image (checknum: dict values in
         # reconcile.yaml). Applied after categorize so rule matching still sees
@@ -1698,7 +1726,7 @@ def main():
                 reasons = []
                 if M["source"] != t["transfer"]:
                     reasons.append(f"wrong account (expected {t['transfer'].split(':')[-1]})")
-                if M["transfer"] != t["source"] and M["transfer"] != UNKNOWN:
+                if M["transfer"] != t["source"] and M["transfer"] != UNKNOWN and not M.get("_fallback"):
                     reasons.append(f"categorized to {M['transfer']} (not {t['source'].split(':')[-1]} or Unknown)")
                 reason_str = "; ".join(reasons) if reasons else "paired OK"
                 lines.append(

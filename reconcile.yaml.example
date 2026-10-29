@@ -68,17 +68,20 @@ rules:
       # positive = credit (money in). Value can be exact (amount: 100)
       # or a comparison string (amount: ">0", amount: "<0").
       #
-      # PRIORITY: Amount-only rules (no desc/mcc/pfc/checks/fitid) sort as
-      # lowest priority. Use for catch-all defaults like "all deposits."
+      # FALLBACK: Mark catch-all rules with `fallback: true`. They are only
+      # tried after all regular rules, ensuring a specific rule always wins.
+      # Fallback-matched transactions are flagged for review.
       - if:
           amount: ">0"
         then: Income:Interest
+        fallback: true
 
   - source: Assets:Savings
     rules:
       - if:
           amount: ">0"
         then: Income:Interest
+        fallback: true
 
   # Offsets: conditional double-entry transactions in then:
   - source: Assets:Checking

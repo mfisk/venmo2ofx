@@ -79,6 +79,28 @@ Amount is extracted from regex group 1. `describe_as` supports `{payee}` and
 
 Children can override with their own `source:` if needed.
 
+## Fallback rules
+
+A rule marked with `fallback: true` is only tried after all regular rules
+have been checked. This ensures a specific rule always beats a catch-all,
+regardless of sort order.
+
+```yaml
+- source: Assets:Green Dot
+  rules:
+    - if:
+        desc: VENMO-CASHOUT
+      then: Assets:Gina Venmo
+    - if:
+        amount: '>0'
+      then: Zia Revenue
+      fallback: true
+```
+
+Fallback-matched transactions are flagged for review — they indicate a
+transaction not covered by a specific rule. For transfer pairing, fallback-
+matched transactions are treated as uncategorized (available as mirrors).
+
 ## Account placeholders
 
 - `YYYY` → transaction year (e.g. `2026`)
