@@ -146,7 +146,8 @@ class Rules:
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
                  "amount", "rules", "memo_regex", "debit_account",
-                 "credit_account", "description"}
+                 "credit_account", "description", "match", "then",
+                 "debit", "credit", "describe_as"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
             for node in nodes:
@@ -160,6 +161,34 @@ class Rules:
                 for k, v in node.items():
                     if k != "rules":
                         ctx[k] = v
+                # Normalize match:/then: structure to flat format.
+                # match: {filters} -> filters at top level
+                # then: <account string> -> account: <string>
+                # then: {debit, credit, describe_as} -> offset rule keys
+                # then: {account: ...} -> account at top level
+                if "match" in ctx:
+                    m = ctx.pop("match")
+                    check(isinstance(m, dict),
+                          f"match must be a dict at {where}: {m!r}")
+                    for k, v in m.items():
+                        ctx[k] = v
+                if "then" in ctx:
+                    t = ctx.pop("then")
+                    if isinstance(t, str):
+                        # Bare account shorthand
+                        ctx["account"] = t
+                    elif isinstance(t, dict):
+                        # Full stanza: map verb keys to internal keys
+                        if "debit" in t:
+                            ctx["debit_account"] = t["debit"]
+                        if "credit" in t:
+                            ctx["credit_account"] = t["credit"]
+                        if "describe_as" in t:
+                            ctx["description"] = t["describe_as"]
+                        if "account" in t:
+                            ctx["account"] = t["account"]
+                    else:
+                        check(False, f"then must be a string or dict at {where}: {t!r}")
                 # Leaf rule: has account + at least one criterion.
                 if "account" in ctx and any(k in ctx for k in CRITERIA):
                     pats = ctx.get("desc")  # None = match any description
