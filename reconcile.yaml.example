@@ -1,12 +1,11 @@
 # Example reconcile.yaml for reconcile.py
 #
 # Copy this to reconcile.yaml and fill in your own accounts and patterns.
-# See README.md for the rule precedence order.
+# See RULES.md for the full rule format documentation.
 #
-# Rules are a recursive tree. Any node can have a nested `rules:` list;
-# children inherit all parent keys (source, account, etc.) unless overridden.
-# A node with an `account` and matching criteria (desc, mcc, pfc,
-# checks, fitid, or amount) is a leaf rule.
+# Rules use if:/then: structure. Filters (nouns) go under if:, side-effects
+# (verbs) go under then:. All top-level terms in if: are ANDed; for OR,
+# use separate rules. First match wins.
 
 source_accounts:
   # Map input accounts to account paths in your bookkeeping software.
@@ -30,54 +29,73 @@ rules:
   # Group by source; children inherit it.
   - source: Assets:Checking
     rules:
-      - account: Expenses:Groceries
-        desc:
-          - CORNER MARKET
-          - FRESH FIELDS
+      - if:
+          desc:
+            - CORNER MARKET
+            - FRESH FIELDS
+        then: Expenses:Groceries
 
       # Transfers are just rules between two source accounts.
       # Pairing is automatic when both accounts are in source_accounts:.
-      - account: Liabilities:Credit Card
-        desc:
-          - ONLINE PAYMENT
-          - PAYMENT THANK YOU
+      - if:
+          desc:
+            - ONLINE PAYMENT
+            - PAYMENT THANK YOU
+        then: Liabilities:Credit Card
 
-      # '#' in a desc matches any digit.
-      - account: Expenses:Fuel
-        desc: PILOT #
+      # Bare string shorthand for if: desc
+      - if: BLUE BOTTLE
+        then: Expenses:Dining
 
-      # Nested: children inherit account from the parent.
-      - account: Expenses:Fuel
-        rules:
-          # MCC alone, no desc: any transaction with these codes.
-          - mcc: [5541, 5542]
-          # Compound: desc + no_mcc. Backstop for code-less data.
-          - desc: PILOT #
-            no_mcc: true
+      # Compound: desc + mcc must both match (AND)
+      - if:
+          desc: BLUE BOTTLE
+          pfc: [FOOD_AND_DRINK_COFFEE]
+        then: Expenses:Dining
 
-      - account: Expenses:Dining
-        desc: BLUE BOTTLE
-        pfc: [FOOD_AND_DRINK_COFFEE]
-
-      # Check numbers are exact per-account identifiers. Three formats:
-      # a plain list, a dict mapping numbers to payee names, or a dict
-      # mapping payee names to lists of numbers.
-      - account: Expenses:Parking
-        checks:
-          CITY GARAGE LLC: ['1042', '1043']
-      - account: Expenses:Office
-        checks: ['2041', '2042']
+      # Check numbers are exact per-account identifiers. Two formats:
+      # a plain list, or a dict mapping payee names to lists of numbers
+      # (which also sets the payee from check images).
+      - if:
+          checks:
+            CITY GARAGE LLC: ['1042', '1043']
+        then: Expenses:Parking
+      - if:
+          checks: ['2041', '2042']
+        then: Expenses:Office
 
       # Amount conditions use signed amounts: negative = debit (money out),
       # positive = credit (money in). Value can be exact (amount: 100)
       # or a comparison string (amount: ">0", amount: "<0").
       #
       # PRIORITY: Amount-only rules (no desc/mcc/pfc/checks/fitid) sort as
-      # lowest priority. Any rule with a description pattern, MCC, check
-      # number, or FITID will match first. Use amount-only for catch-all
-      # defaults like "all deposits to this account."
-      #
-      # This catches all deposits to Savings that no more specific rule claimed.
-      - account: Income:Interest
-        source: Assets:Savings
-        amount: ">0"
+      # lowest priority. Use for catch-all defaults like "all deposits."
+      - if:
+          amount: ">0"
+        then: Income:Interest
+
+  - source: Assets:Savings
+    rules:
+      - if:
+          amount: ">0"
+        then: Income:Interest
+
+  # Offsets: conditional double-entry transactions in then:
+  - source: Assets:Checking
+    rules:
+      - if: PAYROLL
+        then:
+          account: Expenses:Payroll
+          offsets:
+            - if:
+                memo_regex: 'Bonus\s+\$([\d,]+\.?\d*)'
+              debit: Assets:Bonus
+              credit: Expenses:Payroll:Bonus
+              describe_as: 'Bonus for {payee}'
+
+  # FITID: exact transaction ID (cannot combine with other filters)
+  - source: Assets:Checking
+    rules:
+      - if:
+          fitid: 'abc123def456'
+        then: Expenses:OneOff

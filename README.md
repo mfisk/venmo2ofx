@@ -93,18 +93,13 @@ Copy `reconcile.yaml.example` to `reconcile.yaml` and fill in your account mappi
 
 1. **Parse** — every input becomes the same transaction dict (date, amount, payee, memo, account id)
 2. **Enrich** (optional `--register`) — fills in missing payee/memo detail from a QuickBooks register export via one-to-one date+amount matching; each bank transaction matches at most one register entry, so two same-amount same-day payments can't collapse onto one person. Only INTUIT/PAYROLL transactions are eligible (the register is a payroll detail source). **The register never creates transactions** — it only adds detail to transactions already imported from bank sources (Plaid, banking CSV, etc.). This is deliberate: the register is QuickBooks' internal view, which includes manual entries, QB-specific categorizations, and items that may not reflect actual bank activity 1:1. The bank inputs are the source of truth for money movement; the register's value is its rich payee/memo detail that bank exports lack.
-3. **Classify** — each transaction is categorized via `reconcile.yaml`. Rules are tried in order; the first match wins:
-* Transfer rules — explicit source→destination pairs (e.g. checking → credit card payment)
-* Check-number rules — matched on check number for check transactions
-* Description patterns — substring matches on payee/memo; longer patterns win over shorter ones, so `WHOLE FOODS MARKET #123` beats `WHOLE FOODS`
-* MCC/PFC code rules — last resort, based on merchant category code or Plaid personal finance category
-* Amount-only rules — no description pattern, just an amount condition (e.g. `amount: ">0"`). These sort as lowest priority: any rule with a description pattern, MCC, check number, or FITID will match first. Use for catch-all defaults like "all deposits to this account."
+3. **Classify** — each transaction is categorized via `reconcile.yaml`. See `RULES.md` for the full rule format. Rules are tried in order; the first match wins. Order is: hand-written rules without `source:` (in YAML order) first, then the rest sorted by pattern length (longer patterns first). Amount-only rules (no pattern) sort last as catch-alls.
 4. **Reconcile** — pairs transfer legs across accounts; strict by default, `--allow-unpaired` lists instead of aborting
 5. **Emit** — a single reconciled multi-account QIF (one file, all accounts, deterministic)
 
 ## The rules file (`reconcile.yaml`)
 
-Copy `example-rules.yaml` to `reconcile.yaml`. See `RULES.md` for the full
+Copy `reconcile.yaml.example` to `reconcile.yaml`. See `RULES.md` for the full
 rule format documentation.
 
 Two top-level keys: `source_accounts:` (mapping of account IDs to paths) and
