@@ -104,38 +104,11 @@ Copy `reconcile.yaml.example` to `reconcile.yaml` and fill in your account mappi
 
 ## The rules file (`reconcile.yaml`)
 
-Copy `reconcile.yaml.example` to `reconcile.yaml`. Two top-level keys: `source_accounts:` (a mapping of account IDs to paths) and `rules:` (a list of rule dicts).
+Copy `example-rules.yaml` to `reconcile.yaml`. See `RULES.md` for the full
+rule format documentation.
 
-#### `source_accounts`
-
-* Maps input account IDs to account paths in your bookkeeping software (e.g. `Assets:Checking`). See the input formats section for where each format's account ID comes from.
-* Transfers are just rules where both `source:` and `account:` are in this map. Pairing is automatic.
-
-#### `rules`
-
-* A recursive tree. Any node can have a nested `rules:` list; children inherit all parent keys (`source:`, `account:`, etc.) unless they override them.
-* A leaf rule has an `account:` and at least one matching criterion:
-  * `desc:` — substring match on description; `#` matches any digit (so `PILOT #` matches `PILOT 4569`)
-  * `mcc:` — merchant category code is in the list (no pattern needed)
-  * `pfc:` — Plaid personal finance category is in the list (no pattern needed)
-  * `checks:` — exact check-number match. Three formats:
-    * `checks: [1042, 1043]` — list of numbers
-    * `checks: {'1042': 'CITY GARAGE'}` — number → payee name
-    * `checks: {'CITY GARAGE': ['1042', '1043']}` — payee → list of numbers
-  * `amount:` — amount condition on the signed amount (negative =
-    debit/money out, positive = credit/money in). Value can be an exact
-    number (`amount: 100`) or a string with `>`/`<` prefix
-    (`amount: ">0"`, `amount: "<0"`). An amount-only rule (no
-    desc/mcc/pfc) is a catch-all for that flow on its source, sorted
-    after all patterned rules.
-* Compound conditions: `desc:` plus `mcc:`/`pfc:`/`no_mcc:`/`no_pfc:`/`amount:` must all pass.
-  * `no_mcc:` / `no_pfc:` — fires only when the code is absent entirely
-  * A missing code never satisfies `mcc:`/`pfc:`
-  * Amount conditions fail closed when the amount is unknown
-* Precedence: transfer rules, then checks (exact), then pattern rules (longer patterns win), then pattern-less MCC/PFC rules as fallback. Hand-written rules always beat code rules.
-* Rules without `source:` match any input account.
-
-Rules are tried in order for each transaction; the first match wins. Transactions that match no rule go to the default `Unspecified` account. See `reconcile.yaml.example` for the full format.
+Two top-level keys: `source_accounts:` (mapping of account IDs to paths) and
+`rules:` (a list of rule dicts using `if:`/`then:` structure).
 
 ---
 
