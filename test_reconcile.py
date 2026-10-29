@@ -151,23 +151,30 @@ rules:
 
 
 def test_checknum():
-    """checknum: list and dict forms."""
+    """checknum: list and dict forms. Now a regular if: filter."""
     path = write_yaml('''
 rules:
   - source: Assets:Checking
     rules:
-      - account: Expenses:Rent
-        desc: LANDLORD
-        checknum: [1001, 1002]
-      - account: Expenses:Parking
-        desc: GARAGE
-        checknum:
-          2001: CITY GARAGE
+      - if:
+          desc: LANDLORD
+          checknum: [1001, 1002]
+        then: Expenses:Rent
+      - if:
+          desc: GARAGE
+          checks:
+            CITY GARAGE: [2001]
+        then: Expenses:Parking
 ''')
     r = Rules(path)
-    assert r.checknum_index[('Assets:Checking', '1001')] == 'Expenses:Rent'
+    # check_payees still built for payee replacement
     assert r.check_payees[('Assets:Checking', '2001')] == 'CITY GARAGE'
     assert ('Assets:Checking', '1001') not in r.check_payees
+    # checknum is now a regular filter in cond
+    acct, _, _ = r.categorize('Assets:Checking', 'LANDLORD', None, checknum='1001')
+    assert acct == 'Expenses:Rent', f"got {acct}"
+    acct, _, _ = r.categorize('Assets:Checking', 'LANDLORD', None, checknum='9999')
+    assert acct != 'Expenses:Rent', f"checknum filter not applied"
     os.unlink(path)
     print("PASS: checknum")
 

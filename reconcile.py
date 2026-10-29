@@ -212,6 +212,21 @@ class Rules:
                             check(isinstance(ctx[ck], bool),
                                   f"{ck} must be true/false at {where}")
                             cond[ck] = ctx[ck]
+                    # Checknum: normalize to list of strings (list or payee->nums dict)
+                    cn_key = "checks" if "checks" in ctx else "checknum" if "checknum" in ctx else None
+                    if cn_key:
+                        cn = ctx[cn_key]
+                        if isinstance(cn, dict):
+                            # Payee -> [nums] format: collect all numbers
+                            nums = []
+                            for payee, nlist in cn.items():
+                                check(isinstance(nlist, list),
+                                      f"checks dict must be payee->[nums]: {where}")
+                                nums.extend(str(n) for n in nlist)
+                            cond["checknum"] = nums
+                        else:
+                            v = cn if isinstance(cn, list) else [cn]
+                            cond["checknum"] = [str(x) for x in v]
                     for ck in ("amount",):
                         if ck in ctx:
                             v = ctx[ck]
@@ -271,9 +286,8 @@ class Rules:
         # rules with a checknum criterion. Plaid folds "Check Paid #583" to
         # "CHECK PAID ##", so description patterns cannot tell checks apart;
         # check numbers are exact per-account identifiers instead.
-        # Checknum can be a list [1042, 1043] or a dict {1042: "Payee Name"}
-        # where the value overrides the transaction's description.
-        self.checknum_index = {}
+        # Checknum payee replacement: (source, checknum) -> handwritten payee
+        # from check images. Applied as post-processing, not matching.
         self.check_payees = {}  # (source, checknum) -> handwritten payee
         self.fitid_index = {}  # (source, fitid) -> account
         self.fitid_memos = {}  # (source, fitid) -> memo override
@@ -300,37 +314,24 @@ class Rules:
                     elif isinstance(t, dict) and "account" in t:
                         ctx["account"] = t["account"]
                 # Accept both 'checks' (preferred) and 'checknum' (legacy).
+                # Only builds check_payees for payee replacement (post-processing).
+                # Checknum matching is a regular if: filter (see _cond_ok).
+                # Two formats:
+                #   checks: ['517', '521']                    (list, no payee)
+                #   checks: {'Dan Kurtz': ['517', '521']}     (payee -> nums)
                 cn_key = "checks" if "checks" in ctx else "checknum"
-                if cn_key in ctx and "account" in ctx:
+                if cn_key in ctx:
                     src = ctx.get("source")
-                    acct = ctx["account"]
                     cn = ctx[cn_key]
-                    # Three formats:
-                    #   checknum: ['517', '521']                    (list)
-                    #   checknum: {'517': 'Dan Kurtz', ...}         (num -> payee)
-                    #   checknum: {'Dan Kurtz': ['517', '521']}     (payee -> nums)
                     if isinstance(cn, dict):
-                        # Detect payee->nums format: keys are non-numeric, values are lists
-                        sample_key = next(iter(cn.keys()), None)
-                        sample_val = cn.get(sample_key)
-                        if sample_key is not None and not str(sample_key).strip("'\"").isdigit() \
-                                and isinstance(sample_val, list):
-                            # Payee -> [check numbers]
-                            for payee, nums in cn.items():
-                                for num in nums:
-                                    self.checknum_index[(src, str(num))] = acct
-                                    if payee:
-                                        self.check_payees[(src, str(num))] = str(payee)
-                        else:
-                            # Check number -> payee
-                            for num, payee in cn.items():
-                                self.checknum_index[(src, str(num))] = acct
+                        # Payee -> [check numbers] (format 3 only; format 2 dropped)
+                        for payee, nums in cn.items():
+                            check(isinstance(nums, list),
+                                  f"checks dict must be payee->[nums] format: {node!r}")
+                            for num in nums:
                                 if payee:
                                     self.check_payees[(src, str(num))] = str(payee)
-                    else:
-                        nums = [cn] if isinstance(cn, (str, int)) else cn
-                        for num in nums:
-                            self.checknum_index[(src, str(num))] = acct
+                    # List format has no payee to record
                 if "fitid" in ctx and "account" in ctx:
                     # Consistency: if: is always AND across top-level terms.
                     # Fitid cannot be combined with any other filter — if you
@@ -398,7 +399,7 @@ class Rules:
         return hit
 
     @staticmethod
-    def _cond_ok(cond, plaid, amount=None):
+    def _cond_ok(cond, plaid, amount=None, checknum=None):
         """Check a hand rule's compound conditions against the txn's codes."""
         plaid = plaid or {}
         mcc = plaid.get("mcc")
@@ -407,6 +408,9 @@ class Rules:
             return False
         if "pfc" in cond and pfc not in cond["pfc"]:
             return False
+        if "checknum" in cond:
+            if checknum is None or str(checknum) not in cond["checknum"]:
+                return False
         if cond.get("no_mcc") and mcc:
             return False
         if cond.get("no_pfc") and pfc:
@@ -474,13 +478,6 @@ class Rules:
         def resolve(acct):
             # YYYY-MM first: it contains YYYY as a prefix
             return acct.replace("YYYY-MM", year_month).replace("YYYY", year)
-        # Exact check-number match: beats description patterns.
-        if checknum:
-            hit = self.checknum_index.get((source, str(checknum)))
-            if hit is None:
-                hit = self.checknum_index.get((None, str(checknum)))
-            if hit is not None:
-                return resolve(hit), f'checknum:"{checknum}"', None
         # Exact FITID match: beats description patterns (one-off Venmo etc.).
         if fitid:
             hit = self.fitid_index.get((source, str(fitid)))
@@ -500,7 +497,7 @@ class Rules:
                 continue
             if m is not None and fold(m) not in folded:
                 continue
-            if cond is not None and not self._cond_ok(cond, plaid, amount):
+            if cond is not None and not self._cond_ok(cond, plaid, amount, checknum):
                 continue
             if m is None:
                 op, threshold = cond["amount"]
