@@ -146,7 +146,7 @@ class Rules:
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
                  "amount", "rules", "memo_regex", "debit_account",
-                 "credit_account", "description", "match", "then",
+                 "credit_account", "description", "if", "then",
                  "debit", "credit", "describe_as"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
@@ -161,15 +161,15 @@ class Rules:
                 for k, v in node.items():
                     if k != "rules":
                         ctx[k] = v
-                # Normalize match:/then: structure to flat format.
-                # match: {filters} -> filters at top level
+                # Normalize if:/then: structure to flat format.
+                # if: {filters} -> filters at top level
                 # then: <account string> -> account: <string>
                 # then: {debit, credit, describe_as} -> offset rule keys
                 # then: {account: ...} -> account at top level
-                if "match" in ctx:
-                    m = ctx.pop("match")
+                if "if" in ctx:
+                    m = ctx.pop("if")
                     check(isinstance(m, dict),
-                          f"match must be a dict at {where}: {m!r}")
+                          f"if must be a dict at {where}: {m!r}")
                     for k, v in m.items():
                         ctx[k] = v
                 if "then" in ctx:
