@@ -1694,9 +1694,16 @@ def main():
                     continue
                 if abs((M["date"] - t["date"]).days) > 7:
                     continue
+                # Explain why this candidate didn't pair
+                reasons = []
+                if M["source"] != t["transfer"]:
+                    reasons.append(f"wrong account (expected {t['transfer'].split(':')[-1]})")
+                if M["transfer"] != t["source"] and M["transfer"] != UNKNOWN:
+                    reasons.append(f"categorized to {M['transfer']} (not {t['source'].split(':')[-1]} or Unknown)")
+                reason_str = "; ".join(reasons) if reasons else "paired OK"
                 lines.append(
                     f"    candidate: {M['date']} {M['amount']:10.2f} {M['source']} "
-                    f":: {clean(M['payee'])[:60]} (transfer={M['transfer']})")
+                    f":: {clean(M['payee'])[:60]} (transfer={M['transfer']}) [{reason_str}]")
         detail = "\n".join(lines)
         raise SystemExit(
             f"ERROR: {len(unpaired)} transfer(s) between import accounts with no "
