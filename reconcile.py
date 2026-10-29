@@ -300,6 +300,20 @@ class Rules:
                 for k, v in node.items():
                     if k != "rules":
                         ctx[k] = v
+                # Normalize if:/then: structure (same as flatten)
+                if "if" in ctx:
+                    m = ctx.pop("if")
+                    if isinstance(m, str):
+                        ctx["desc"] = [m]
+                    elif isinstance(m, dict):
+                        for k2, v2 in m.items():
+                            ctx[k2] = v2
+                if "then" in ctx:
+                    t = ctx.pop("then")
+                    if isinstance(t, str):
+                        ctx["account"] = t
+                    elif isinstance(t, dict) and "account" in t:
+                        ctx["account"] = t["account"]
                 # Accept both 'checks' (preferred) and 'checknum' (legacy).
                 cn_key = "checks" if "checks" in ctx else "checknum"
                 if cn_key in ctx and "account" in ctx:
@@ -333,6 +347,14 @@ class Rules:
                         for num in nums:
                             self.checknum_index[(src, str(num))] = acct
                 if "fitid" in ctx and "account" in ctx:
+                    # Fail closed: fitid with other filters (except desc) is ambiguous.
+                    # Fitid+desc is OR semantics (both mechanisms). Fitid+mcc/pfc/amount
+                    # would be AND, but the separate index ignores them. Reject.
+                    other_filters = [k for k in ctx.keys()
+                                     if k in ("mcc", "pfc", "amount", "no_mcc", "no_pfc")]
+                    check(not other_filters,
+                          f"fitid cannot be combined with {other_filters} in if: "
+                          f"(ambiguous AND/OR). Use fitid alone or with desc only: {node!r}")
                     src = ctx.get("source")
                     acct = ctx["account"]
                     fids = ctx["fitid"]
