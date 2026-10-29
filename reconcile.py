@@ -132,6 +132,7 @@ class Rules:
         #           no_mcc: true
         flat = []
         hand_count = 0
+        self.offset_rules = []  # collected by flatten() from memo_regex nodes
         # Matching criteria keys (a leaf rule needs account + at least one).
         # Amount conditions use signed amounts: negative = debit (money out),
         # positive = credit (money in). The amount value can be an exact
@@ -144,7 +145,8 @@ class Rules:
         # All valid keys on a rule node.
         VALID = {"source", "account", "desc", "mcc", "pfc",
                  "no_mcc", "no_pfc", "checks", "checknum", "fitid",
-                 "amount", "rules"}
+                 "amount", "rules", "memo_regex", "debit_account",
+                 "credit_account", "description"}
         def flatten(nodes, inherited, where):
             nonlocal hand_count
             for node in nodes:
@@ -214,6 +216,19 @@ class Rules:
                         flat.append((src, ctx["account"], pat, cond or None))
                         if src is None:
                             hand_count += 1
+                # Offset rule: has memo_regex + debit_account + credit_account.
+                # Collected separately, not added to flat.
+                elif "memo_regex" in ctx:
+                    import re as _re
+                    check("debit_account" in ctx and "credit_account" in ctx,
+                          f"offset rule needs debit_account and credit_account at {where}: {node!r}")
+                    self.offset_rules.append({
+                        "regex": _re.compile(ctx["memo_regex"], _re.IGNORECASE),
+                        "debit_account": ctx["debit_account"],
+                        "credit_account": ctx["credit_account"],
+                        "description": ctx.get("description", "Offset for {payee}"),
+                        "source": ctx.get("source"),  # None = any source
+                    })
                 # Recurse into nested rules, if any.
                 if "rules" in node:
                     children = node["rules"]
@@ -313,22 +328,6 @@ class Rules:
                     self.mcc_index[(src, str(mcc))] = acct
                 for pfc in cond.get("pfc") or []:
                     self.pfc_index[(src, pfc)] = acct
-        # Offset rules: match memo_regex against transaction memo, extract
-        # amount (regex group 1), emit a double-entry offset transaction.
-        # Each rule: {memo_regex, debit_account, credit_account, description}.
-        # Description is a template with {payee}, {amount}, {group1}, etc.
-        import re as _re
-        self.offset_rules = []
-        for cr in cfg.get("offset_rules") or []:
-            check(isinstance(cr, dict) and "memo_regex" in cr
-                  and "debit_account" in cr and "credit_account" in cr,
-                  f"offset_rules entry needs memo_regex, debit_account, credit_account: {cr!r}")
-            self.offset_rules.append({
-                "regex": _re.compile(cr["memo_regex"], _re.IGNORECASE),
-                "debit_account": cr["debit_account"],
-                "credit_account": cr["credit_account"],
-                "description": cr.get("description", "Offset for {payee}"),
-            })
 
     def check_payee(self, source, checknum):
         """Handwritten payee for a check number, from checknum: dict values.
@@ -412,16 +411,19 @@ class Rules:
         # GnuCash convention: unmapped accounts go to "Unspecified"
         return "Unspecified"
 
-    def offset_splits(self, memo, payee):
+    def offset_splits(self, memo, payee, source=None):
         """Check memo against offset_rules. Returns list of
         (debit_account, credit_account, amount, description) for each match.
         Amount is always positive; debit gets +amount, credit gets -amount.
         The regex must have one group: the amount (group 1).
         Description template supports {payee}, {amount}.
+        If a rule has a source, it only matches that source.
         """
         results = []
         memo = memo or ""
         for cr in self.offset_rules:
+            if cr.get("source") is not None and cr["source"] != source:
+                continue
             for m in cr["regex"].finditer(memo):
                 try:
                     amt = float(m.group(1).replace(",", ""))
@@ -1587,7 +1589,7 @@ def main():
     for t in txns:
         if not t.get("in_period", True):
             continue
-        for debit_acct, credit_acct, amt, desc in rules.offset_splits(t.get("memo"), t.get("payee")):
+        for debit_acct, credit_acct, amt, desc in rules.offset_splits(t.get("memo"), t.get("payee"), t.get("source")):
             offset_txns.append({
                 "date": t["date"],
                 "amount": -amt,  # out of the credit account
