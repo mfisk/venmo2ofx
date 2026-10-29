@@ -1679,10 +1679,28 @@ def main():
           and not ({t["fitid"] for t in kept} & dropped),
           "merge lost or duplicated transactions")
     if unpaired and not args.allow_unpaired:
-        detail = "\n".join(
-            f"  {t['date']} {t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
-            f"{clean(t['payee'])} (file {t['file']})"
-            for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])))
+        # For each unpaired transfer, find candidate mirrors: matching amount
+        # (opposite sign) in other accounts within 7 days. Shown as diagnostics
+        # only -- never auto-paired.
+        input_accounts = set(e["account"] for e in rules.source_accounts)
+        lines = []
+        for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["fitid"])):
+            lines.append(
+                f"  {t['date']} {t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
+                f"{clean(t['payee'])} (file {t['file']})")
+            for M in txns:
+                if M["fitid"] == t["fitid"]:
+                    continue
+                if M["source"] not in input_accounts or M["source"] == t["source"]:
+                    continue
+                if int(round(float(M["amount"]) * 100)) != -int(round(float(t["amount"]) * 100)):
+                    continue
+                if abs((M["date"] - t["date"]).days) > 7:
+                    continue
+                lines.append(
+                    f"    candidate: {M['date']} {M['amount']:10.2f} {M['source']} "
+                    f":: {clean(M['payee'])[:60]} (transfer={M['transfer']})")
+        detail = "\n".join(lines)
         raise SystemExit(
             f"ERROR: {len(unpaired)} transfer(s) between import accounts with no "
             f"mirror found. Refusing to half-record; extend the pull or add "
