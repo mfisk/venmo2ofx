@@ -1369,9 +1369,9 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
     cand_count = {}
     for P in transfers:
         cands = [M for M in txns if is_mirror(P, M)]
-        cand_count[id(P)] = len(cands)
+        cand_count[P["_uid"]] = len(cands)
         for M in cands:
-            triples.append((abs((M["date"] - P["date"]).days), P["date"], id(P), P, M))
+            triples.append((abs((M["date"] - P["date"]).days), P["date"], P["_uid"], P, M))
     # Closest date first, so recurring same-amount transfers pair with
     # their true mirror instead of a neighbor's.
     triples.sort(key=lambda t: (t[0], t[1]))
@@ -1379,16 +1379,16 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
     dropped, used = set(), set()
     pair_count, pair_log = 0, []
     for gap, _, pid, P, M in triples:
-        if id(P) in used or id(M) in used:
+        if P["_uid"] in used or M["_uid"] in used:
             continue
         # Keep the earlier-dated side so the transfer lands in the right
         # month; on a tie keep the rule-identified side (P). The kept
         # side's transfer account becomes the true counterparty account.
         keep, drop = (M, P) if M["date"] < P["date"] else (P, M)
         keep["transfer"] = drop["source"]
-        dropped.add(id(drop))
-        used.add(id(P))
-        used.add(id(M))
+        dropped.add(drop["_uid"])
+        used.add(P["_uid"])
+        used.add(M["_uid"])
         pair_count += 1
         pair_log.append({"kept": keep.get("fitid"), "dropped": drop.get("fitid"),
                          "gap_days": gap, "candidates": cand_count[pid]})
@@ -1399,8 +1399,8 @@ def pair_transfers(txns, rules, window_days=7, verbose=False):
                   f"dropped {drop['source'].split(':')[-1]} side {drop['date']})",
                   file=sys.stderr)
 
-    kept = [t for t in txns if id(t) not in dropped]
-    unpaired = [P for P in transfers if id(P) not in used]
+    kept = [t for t in txns if t["_uid"] not in dropped]
+    unpaired = [P for P in transfers if P["_uid"] not in used]
     return kept, dropped, pair_count, unpaired, pair_log
 
 
@@ -1559,6 +1559,11 @@ def main():
         txns.extend(items)
     n_in = len(txns)
     check(n_in > 0, "no transactions parsed from inputs")
+    # Assign a unique monotonic ID to each transaction for identity tracking.
+    # (Python's id() is unsafe: it can be reused after garbage collection,
+    # causing false matches in the dropped/used sets during pairing.)
+    for i, t in enumerate(txns):
+        t["_uid"] = i
     # Prune to the requested period at read time, retaining ~3 days of
     # fuzzy boundary data so transfers near Jan 1 / Dec 31 can still pair.
     # Boundary transactions are flagged and excluded from output below.
@@ -1674,10 +1679,15 @@ def main():
                 "how": f'offset:"{desc}"',
                 "in_period": True,
                 "acct_id": t.get("acct_id"),
-                "fitid": f"offset-{t.get('fitid', '')}-{amt:.2f}",
+                "fitid": None,  # No made-up FITIDs; offsets are identified by _uid
             })
     if offset_txns:
         print(f"generated {len(offset_txns)} offset transactions", file=sys.stderr)
+    # Assign UIDs to offset transactions (continuing the sequence)
+    _uid_counter = max(t["_uid"] for t in txns) + 1 if txns else 0
+    for ot in offset_txns:
+        ot["_uid"] = _uid_counter
+        _uid_counter += 1
     txns.extend(offset_txns)
 
     # ---- annotate: airline ticket flight details -> memo -------------------
@@ -1700,8 +1710,8 @@ def main():
     # still find their mirrors.
     kept, dropped, pair_count, unpaired, pair_log = pair_transfers(
         txns, rules, verbose=args.verbose)
-    check({id(t) for t in kept} | dropped == {id(t) for t in txns}
-          and not ({id(t) for t in kept} & dropped),
+    check({t["_uid"] for t in kept} | dropped == {t["_uid"] for t in txns}
+          and not ({t["_uid"] for t in kept} & dropped),
           "merge lost or duplicated transactions")
     if unpaired and not args.allow_unpaired:
         # For each unpaired transfer, find candidate mirrors: matching amount
@@ -1709,7 +1719,7 @@ def main():
         # only -- never auto-paired.
         input_accounts = set(e["account"] for e in rules.source_accounts)
         lines = []
-        for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
+        for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["_uid"])):
             lines.append(
                 f"  {t['date']} {t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
                 f"{clean(t['payee'])} (file {t['file']})")
@@ -1737,7 +1747,7 @@ def main():
             f"ERROR: {len(unpaired)} transfer(s) between import accounts with no "
             f"mirror found. Refusing to half-record; extend the pull or add "
             f"the missing statement.\n{detail}")
-    for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
+    for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["_uid"])):
         print(f"unpaired transfer (no mirror, kept as categorized): {t['date']} "
               f"{t['amount']:10.2f} {t['source']} -> {t['transfer']} :: "
               f"{clean(t['payee'])}", file=sys.stderr)
@@ -1745,7 +1755,7 @@ def main():
     # transactions in OTHER source accounts (opposite amount, within 7 days).
     # Logged as suggestions only -- never auto-paired.
     input_accounts = set(e["account"] for e in rules.source_accounts)
-    for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
+    for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["_uid"])):
         for M in txns:
             if M is t:
                 continue
@@ -1819,7 +1829,7 @@ def main():
             r.write(f"  {n:5d}  {acct}\n")
         if unpaired:
             r.write("\nUNPAIRED TRANSFERS (no mirror found):\n")
-            for t in sorted(unpaired, key=lambda t: (str(t["date"]), id(t))):
+            for t in sorted(unpaired, key=lambda t: (str(t["date"]), t["_uid"])):
                 r.write(f"  {t['date']} {t['amount']:10.2f}  {t['source'].split(':')[-1]:22s} -> "
                         f"{t['transfer'].split(':')[-1]:22s}  {clean(t['payee'])}\n")
         if unknown:
