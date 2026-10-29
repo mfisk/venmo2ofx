@@ -163,15 +163,20 @@ class Rules:
                         ctx[k] = v
                 # Normalize if:/then: structure to flat format.
                 # if: {filters} -> filters at top level
+                # if: "string" -> desc: ["string"] (shorthand)
                 # then: <account string> -> account: <string>
                 # then: {debit, credit, describe_as} -> offset rule keys
                 # then: {account: ...} -> account at top level
                 if "if" in ctx:
                     m = ctx.pop("if")
-                    check(isinstance(m, dict),
-                          f"if must be a dict at {where}: {m!r}")
-                    for k, v in m.items():
-                        ctx[k] = v
+                    if isinstance(m, str):
+                        # Bare desc shorthand
+                        ctx["desc"] = [m]
+                    else:
+                        check(isinstance(m, dict),
+                              f"if must be a string or dict at {where}: {m!r}")
+                        for k, v in m.items():
+                            ctx[k] = v
                 if "then" in ctx:
                     t = ctx.pop("then")
                     if isinstance(t, str):
