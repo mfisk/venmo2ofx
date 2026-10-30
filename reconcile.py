@@ -802,16 +802,15 @@ def enrich_from_register(bank_txns, register_entries):
         if not is_payroll_txn(b):
             unmatched += 1
             continue
-        # Skip PAYROLL-PAYROLL: already correctly identified, register matching
-        # by (date, amount) causes false matches with non-payroll entries
-        if b.get('payee', '').strip().upper() == 'PAYROLL-PAYROLL':
-            unmatched += 1
-            continue
         # Try exact date first, then ±1 day (bank vs register posting dates differ)
+        # Only match Paycheck-type register entries to avoid false matches
+        # with non-payroll entries (e.g. expenses) sharing the same date/amount
         candidates = []
         for delta in [0, -1, 1]:
             key = (b["date"] + timedelta(days=delta), round(b["amount"], 2))
-            candidates = [r for r in reg_by_key.get(key, []) if r["_uid"] not in used]
+            candidates = [r for r in reg_by_key.get(key, [])
+                          if r["_uid"] not in used
+                          and r.get("meta", {}).get("qb_type") == "Paycheck"]
             if candidates:
                 break
         if not candidates:
