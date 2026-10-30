@@ -802,18 +802,23 @@ def enrich_from_register(bank_txns, register_entries):
         if not is_payroll_txn(b):
             unmatched += 1
             continue
+        # Skip PAYROLL-PAYROLL: already correctly identified, register matching
+        # by (date, amount) causes false matches with non-payroll entries
+        if b.get('payee', '').strip().upper() == 'PAYROLL-PAYROLL':
+            unmatched += 1
+            continue
         # Try exact date first, then ±1 day (bank vs register posting dates differ)
         candidates = []
         for delta in [0, -1, 1]:
             key = (b["date"] + timedelta(days=delta), round(b["amount"], 2))
-            candidates = [r for r in reg_by_key.get(key, []) if id(r) not in used]
+            candidates = [r for r in reg_by_key.get(key, []) if r["_uid"] not in used]
             if candidates:
                 break
         if not candidates:
             unmatched += 1
             continue
         reg = candidates[0]
-        used.add(id(reg))
+        used.add(reg["_uid"])
         # Fill in missing detail from the register entry
         # Preserve the transaction type: "Intuit Payroll to <name>",
         # "Intuit Deposit from <name>", etc.
@@ -1599,6 +1604,9 @@ def main():
     # date+amount; register entries are enrichment-only, never emitted).
     if args.register:
         reg_entries = parse_qb_xls(args.register)
+        # Assign UIDs to register entries for identity tracking (avoid id() reuse)
+        for i, r in enumerate(reg_entries):
+            r["_uid"] = i
         txns = enrich_from_register(txns, reg_entries)
 
     # ---- classify ----------------------------------------------------------
